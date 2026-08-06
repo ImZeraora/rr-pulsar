@@ -2,6 +2,7 @@
 #include <MarioKartWii/Race/RaceInfo/RaceInfo.hpp>
 #include <MarioKartWii/Driver/DriverManager.hpp>
 #include <MarioKartWii/RKNet/RKNetController.hpp>
+#include <Network/FriendRoomCPUs.hpp>
 #include <Network/GPReport.hpp>
 
 namespace Pulsar {
@@ -10,6 +11,7 @@ RaceStage sLastRaceStage = RACESTAGE_RACE;
 
 void UpdateRaceInstances() {
     RaceScene::UpdateRaceInstances();
+    Network::UpdateFriendRoomFinishGate();
     if (!DriverMgr::isOnlineRace)
         return;
 
@@ -26,7 +28,13 @@ void UpdateRaceInstances() {
 }
 
 void EndPlayerRaceHook(Raceinfo* _this, u8 playerIdx) {
+    Network::LogFriendRoomRaceFinishEvent(_this, playerIdx, "hook-before");
     _this->EndPlayerRace(playerIdx);
+    // Friend Room completion is evaluated once per race frame, after the
+    // stock online path has consumed all remote finish packets. This keeps
+    // the host's human-only decision independent of which player called
+    // EndPlayerRace first and avoids re-entering the CPU finish path here.
+    Network::LogFriendRoomRaceFinishEvent(_this, playerIdx, "hook-after");
     if (!DriverMgr::isOnlineRace)
         return;
 

@@ -16,6 +16,7 @@
 #include <MarioKartWii/RKNet/RKNetController.hpp>
 #include <MarioKartWii/Scene/GameScene.hpp>
 #include <Network/PacketExpansion.hpp>
+#include <Network/FriendRoomCPUs.hpp>
 #include <Settings/Settings.hpp>
 #include <runtimeWrite.hpp>
 
@@ -470,7 +471,8 @@ bool ShouldApplyBattleRoyale() {
     if (controller == nullptr) return false;
     return controller->roomType == RKNet::ROOMTYPE_NONE ||
            controller->roomType == RKNet::ROOMTYPE_FROOM_HOST ||
-           controller->roomType == RKNet::ROOMTYPE_FROOM_NONHOST;
+           controller->roomType == RKNet::ROOMTYPE_FROOM_NONHOST ||
+           Network::IsFriendRoomCPUTransportActive();
 }
 
 static void CallRaceModeHit(void* raceMode, u32 vtableOffset, u32 firstPlayerId, u32 secondPlayerId) {
@@ -1113,6 +1115,11 @@ static void FrameUpdate() {
         ProcessBalloonEliminations(*lapKoMgr, balloonMgr);
         FinishSoleActiveUnfinishedPlayer(*lapKoMgr, *raceinfo);
     }
+
+    // Friend-room CPU races use the real-human one-racer rule.  Run the gate
+    // after elimination processing so a vanished human is visible to the host
+    // in the same frame instead of waiting for another race-manager update.
+    Network::UpdateFriendRoomFinishGate();
 }
 
 static RaceFrameHook battleRoyaleFrameHook(FrameUpdate);

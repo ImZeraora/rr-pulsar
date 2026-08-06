@@ -9,6 +9,7 @@
 #include <Config.hpp>
 #include <PulsarSystem.hpp>
 #include <Network/Network.hpp>
+#include <Network/FriendRoomCPUs.hpp>
 #include <UI/ExtendedTeamSelect/ExtendedTeamManager.hpp>
 
 namespace Pulsar {
@@ -104,6 +105,11 @@ static bool ConvertFriendRoomStateToRegional() {
     controller->localStatusData.status = RKNet::FRIEND_STATUS_PUBLIC_VS;
     controller->localStatusData.playerCount = totalPlayerCount != 0 ? totalPlayerCount : localPlayerCount;
     controller->localStatusData.curRace = 0;
+
+    // The regional conversion happens before RaceScene::initSLoader. Preserve
+    // the Friend Room origin so synthetic CPU records and their packet path
+    // remain active after the room enum changes.
+    ActivateFriendRoomCPUTransport(wasHost);
 
     if (RKNet::USERHandler::sInstance != nullptr) {
         RKNet::USERHandler::sInstance->isInitialized = false;

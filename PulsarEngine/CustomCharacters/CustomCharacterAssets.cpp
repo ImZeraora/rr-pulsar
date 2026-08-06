@@ -268,6 +268,12 @@ kmCall(0x807eb22c, InitMinimapCharacterHook);
 // Kart archive loading reads the temporarily swapped character name postfix.
 ArchivesHolder* LoadKartArchiveHook(ArchiveMgr* archiveMgr, u8 playerId, KartId kart, CharacterId character, u32 color, u32 type,
                                            EGG::Heap* decompressedHeap, EGG::Heap* archiveHeap) {
+    const u8 table = RaceSkinTable(playerId, character);
+    const char* customName = GeneratedCustomPostfix(character, table);
+    if (customName == nullptr) {
+        return archiveMgr->LoadKartArchive(playerId, kart, character, color, type, decompressedHeap, archiveHeap);
+    }
+
     const char* oldName;
     const char** entry = BeginNameSwap(playerId, character, oldName);
     ArchivesHolder* holder = archiveMgr->LoadKartArchive(playerId, kart, character, color, type, decompressedHeap, archiveHeap);
@@ -278,9 +284,13 @@ kmCall(0x805540f4, LoadKartArchiveHook);
 
 ArchivesHolder* LoadBackupKartArchiveHook(ArchiveMgr* archiveMgr, u8 playerId, KartId kart, CharacterId character, u32 color, u32 type,
                                           EGG::Heap* decompressedHeap, EGG::Heap* archiveHeap) {
+    const u8 table = RaceSkinTable(playerId, character);
+    if (GeneratedCustomPostfix(character, table) == nullptr)
+        return archiveMgr->LoadKartArchiveHolder2(playerId, kart, character, color, type, decompressedHeap, archiveHeap);
+
     const char* oldName;
     const char** entry = BeginNameSwap(playerId, character, oldName);
-    ArchivesHolder* holder = archiveMgr->LoadKartArchiveHolder2(playerId, kart, character, color, 0, decompressedHeap, archiveHeap);
+    ArchivesHolder* holder = archiveMgr->LoadKartArchiveHolder2(playerId, kart, character, color, type, decompressedHeap, archiveHeap);
     if (entry != nullptr) *entry = oldName;
     return holder;
 }

@@ -9,6 +9,7 @@
 #include <MarioKartWii/3D/Camera/RaceCamera.hpp>
 #include <MarioKartWii/Driver/DriverManager.hpp>
 #include <MarioKartWii/UI/Section/SectionMgr.hpp>
+#include <Network/FriendRoomCPUs.hpp>
 #include <Settings/Settings.hpp>
 #include <Settings/SettingsParam.hpp>
 #include <core/rvl/PAD.hpp>
@@ -525,6 +526,11 @@ void Mgr::ReweightItemProbabilitiesNow() {
 bool Mgr::EnterSpectateIfLocal(u8 eliminatedId) {
     if (this->raceFinished) return true;
 
+    // Friend-room CPUs deliberately share the host AID so their RH1 state is
+    // host-authoritative.  That identity must not make a CPU elimination look
+    // like elimination of the host's local racer.
+    if (Network::IsFriendRoomCPU(eliminatedId)) return false;
+
     const Racedata* racedata = Racedata::sInstance;
     const bool isOffline = RKNet::Controller::sInstance->roomType == RKNet::ROOMTYPE_NONE;
     if (isOffline && eliminatedId < racedata->racesScenario.playerCount) {
@@ -598,7 +604,9 @@ void Mgr::ResetEliminationDisplay() {
 bool Mgr::IsFriendRoomOnline() const {
     const RKNet::Controller* controller = RKNet::Controller::sInstance;
     return controller != nullptr &&
-           (controller->roomType == RKNet::ROOMTYPE_FROOM_HOST || controller->roomType == RKNet::ROOMTYPE_FROOM_NONHOST);
+           (controller->roomType == RKNet::ROOMTYPE_FROOM_HOST ||
+            controller->roomType == RKNet::ROOMTYPE_FROOM_NONHOST ||
+            Network::IsFriendRoomCPUTransportActive());
 }
 
 void Mgr::TickEliminationDisplay() {

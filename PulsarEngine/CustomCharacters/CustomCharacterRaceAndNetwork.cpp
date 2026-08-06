@@ -1,5 +1,6 @@
 #include <CustomCharacters/CustomCharacters.hpp>
 #include <IO/SDIO.hpp>
+#include <Network/FriendRoomCPUs.hpp>
 #include <core/rvl/os/OSCache.hpp>
 
 namespace Pulsar {
@@ -166,7 +167,13 @@ void FillRaceResultNameHook(CtrlRaceResult* result, u8 playerId) {
     }
     const RacedataScenario& scenario = racedata->racesScenario;
     const RacedataPlayer& player = scenario.players[playerId];
-    if (RaceResultUsesMiiName(scenario, playerId)) {
+    if (Network::IsFriendRoomCPU(playerId)) {
+        // Friend-room CPUs deliberately use PLAYER_REAL_ONLINE on remote
+        // consoles, so the stock path asks for a remote Mii name.  Their
+        // authoritative identity is the CPU character, which is available on
+        // every client even when the remote MiiGroup has no CPU entry.
+        result->SetTextBoxMessage("player_name", GetCharacterBMGId(player.characterId, true), nullptr);
+    } else if (RaceResultUsesMiiName(scenario, playerId)) {
         Text::Info info;
         info.miis[0] = sectionMgr->sectionParams->playerMiis.GetMii(playerId);
         result->SetTextBoxMessage("player_name", UI::BMG_MII_NAME, &info);

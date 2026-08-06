@@ -15,6 +15,8 @@
 #include <MarioKartWii/UI/Ctrl/CtrlRace/CtrlRaceBalloon.hpp>
 #include <MarioKartWii/UI/Ctrl/CtrlRace/CtrlRaceRankNum.hpp>
 #include <MarioKartWii/Race/RaceInfo/RaceInfo.hpp>
+#include <MarioKartWii/GlobalFunctions.hpp>
+#include <Network/FriendRoomCPUs.hpp>
 
 namespace Pulsar {
 namespace UI {
@@ -22,7 +24,9 @@ namespace UI {
 static const u32 ALL_CUSTOM_ITEMS = 0x7FFFF;
 
 void Racedata_InitRace(Racedata* racedata) {
+    Network::PrepareFriendRoomCPUs(racedata);
     racedata->InitRace();
+    Network::FinalizeFriendRoomCPUs();
 
     const RacedataSettings& settings = racedata->menusScenario.settings;
     if (settings.gamemode == MODE_VS_RACE && !(settings.modeFlags & ExtendedTeamManager::TEAM_MODE_FLAG) && ExtendedTeamManager::IsActivated()) {
@@ -217,6 +221,10 @@ kmCall(0x807eb9d4, CtrlRace2DMapCharacter_PlayAnimationAtFrameAndDisable);
 
 void CtrlRaceNameBalloon_refresh(CtrlRaceNameBalloon* _this, u8 playerId) {
     _this->UpdateInfo(playerId);
+    if (Network::IsFriendRoomCPU(playerId) && Racedata::sInstance != nullptr) {
+        const CharacterId character = Racedata::sInstance->racesScenario.players[playerId].GetCharacterId();
+        _this->SetTextBoxMessage("chara_name", GetCharacterBMGId(character, true), nullptr);
+    }
     if (ExtendedTeamManager::IsActivated()) {
         u8 r, g, b;
         ExtendedTeamSelect::GetTeamColor(ExtendedTeamManager::sInstance->GetPlayerTeam(playerId), r, g, b);
@@ -306,6 +314,11 @@ kmCall(0x807f4f8c, CtrlRaceResult_InitPatchAnimation);
 
 void WifiAwardResultItem_fillPlayerResult(Pages::WifiAwardResultItem* _this, u8 playerIdx, bool isTeamVS, int localPlayerCount) {
     _this->FillResult(playerIdx, isTeamVS, localPlayerCount);
+
+    if (Network::IsFriendRoomCPU(playerIdx) && Racedata::sInstance != nullptr) {
+        const CharacterId character = Racedata::sInstance->racesScenario.players[playerIdx].GetCharacterId();
+        _this->SetTextBoxMessage("mii_name", GetCharacterBMGId(character, true), nullptr);
+    }
 
     if (ExtendedTeamManager::IsActivated()) {
         nw4r::lyt::Pane *pane, *pane2;

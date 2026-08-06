@@ -69,6 +69,35 @@ static const u32 PulRH1SizeBase = sizeof(PulRH1) - PulRH1LapKoSize - PulRH1Battl
 static const u32 PulRH1SizeLapKo = PulRH1SizeBase + PulRH1LapKoSize;
 static const u32 PulRH1SizeFull = sizeof(PulRH1);
 
+// Friend-room CPUs use the same RACEDATA receiver as remote players.  One
+// complete 0x40-byte RACEDATA record is carried per RH1 packet.  Records are
+// rotated between CPU player IDs so the payload stays inside the RH1 section
+// limit while the stock receiver performs interpolation and reconciliation.
+static const u32 FriendRoomCPUCountMax = 11;
+
+struct FriendRoomCPUItem {
+    u8 storedItem;
+    u8 storedItemCount;
+    u8 activeItem;  // ItemId, or ITEM_NONE when no item is being dragged
+    u8 flags;       // lower 6 bits: Player bitfield; upper 2 bits: active count (1-3)
+};
+
+struct FriendRoomCPUSyncPacket {
+    u8 magic;
+    u8 cpuCount;
+    u8 raceDataPlayerId;
+    u8 reserved;  // bit 0: host has armed the shared results transition
+    u32 raceDataSequence;
+    RKNet::RACEDATAPacket raceData;
+    u8 playerIds[FriendRoomCPUCountMax];
+    FriendRoomCPUItem items[FriendRoomCPUCountMax];
+    u16 cpuFinishMask;  // player-id bits with stock FINISHED/DISCONNECTED state
+    u8 finishOrder[12];
+};
+
+static const u32 PulRH1SizeFriendRoomCPU = PulRH1SizeFull + sizeof(FriendRoomCPUSyncPacket);
+static_assert(PulRH1SizeFriendRoomCPU <= 0xFF, "Friend-room CPU RH1 section is too large");
+
 struct PulRH2 : public RKNet::RACEHEADER2Packet {};
 struct PulROOM : public RKNet::ROOMPacket {
     // Generic ROOM settings
@@ -139,7 +168,7 @@ struct PulITEM : public RKNet::ITEMPacket {};
 struct PulEVENT : public RKNet::EVENTPacket {};  // NOT RECOMMENDED as this has variable length
 #pragma pack(pop)
 
-static const u32 totalRACESize = sizeof(RKNet::RACEPacketHeader) + sizeof(PulRH1) + sizeof(PulRH2) + sizeof(PulSELECT) + 2 * sizeof(PulRACEDATA) + sizeof(PulUSER) + 2 * sizeof(PulITEM) + sizeof(PulEVENT);
+static const u32 totalRACESize = sizeof(RKNet::RACEPacketHeader) + PulRH1SizeFriendRoomCPU + sizeof(PulRH2) + sizeof(PulSELECT) + 2 * sizeof(PulRACEDATA) + sizeof(PulUSER) + 2 * sizeof(PulITEM) + sizeof(PulEVENT);
 
 class CustomRKNetController {  // Exists to make received packets a pointer array so that the size can be variable
    public:
