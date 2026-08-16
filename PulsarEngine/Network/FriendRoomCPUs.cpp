@@ -4,11 +4,9 @@
 #include <MarioKartWii/Kart/KartManager.hpp>
 #include <MarioKartWii/Kart/KartLink.hpp>
 #include <MarioKartWii/Race/RaceInfo/RaceInfo.hpp>
-#include <MarioKartWii/UI/Page/RaceHUD/RaceHUD.hpp>
 #include <MarioKartWii/UI/Section/SectionMgr.hpp>
 #include <MarioKartWii/RKNet/PacketMgr.hpp>
 #include <MarioKartWii/RKNet/RKNetController.hpp>
-#include <PulsarSystem.hpp>
 #include <core/egg/mem/Heap.hpp>
 #include <core/rvl/OS/OS.hpp>
 #include <runtimeWrite.hpp>
@@ -17,24 +15,25 @@ namespace Pulsar {
 namespace Network {
 
 static const u8 FRIEND_ROOM_CPU_MAGIC = 0xC7;
-static const u8 FRIEND_ROOM_CPU_FLAG_RESULTS_READY = 0x01;
+static const u32 FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES = 1801;
 
-// This runtime function is used by the host CPU finish path below.  Keep the
-// auto-map declaration before that first use so MWCC emits the region-mapped
-// symbol declaration before compiling the call site.
-kmRuntimeUse(0x805342e8);
-kmRuntimeUse(0x80602488);
+// These are stock online-VS routines.  The CPU bridge calls them only after
+// the native race-mode path has decided that its online timeout elapsed.
+kmRuntimeUse(0x8053e7ac);
+kmRuntimeUse(0x8053e680);
+kmRuntimeUse(0x8053ec40);
+kmRuntimeUse(0x80533dd4);
 
-// One state block keeps all receive buffers and race gates resettable.
+// One state block keeps all receive buffers and CPU transport state resettable.
 struct FriendRoomCPUState {
     FriendRoomCPUItem items[12];
     bool itemValid[12];
     RKNet::RACEDATAPacket raceData[12];
     u32 raceSeq[12];
     bool raceValid[12];
-    u16 cpuFinishMask;
-    u8 finishOrder[12];
-    bool finishValid;
+    RKNet::RACEHEADER2Packet rh2Data[12];
+    u32 rh2Seq[12];
+    bool rh2Valid[12];
 
     bool cpu[12];
     u8 cpuOrder[FriendRoomCPUCountMax];
@@ -45,38 +44,21 @@ struct FriendRoomCPUState {
 
     bool active;
     bool host;
-    bool battleRoyale;
     u8 humans;
-
-    bool completing;
-    bool loggedCPU;
-    bool loggedRemote;
-    bool loggedResults;
-    bool loggedEnd;
-    bool requestedResults;
-    bool resultsReady;
-    bool loggedReady;
-    bool loggedGate;
-    u8 lastStage;
-    u8 lastHumans;
-    u8 lastFinished;
-    u32 lastFrame;
-
-    // Diagnostic state for the human-only finish gate. These are deliberately
-    // separate from the end-progress fields above: the gate is called from
-    // more than one hook during a frame, and we want to identify which hook
-    // observed a transition without suppressing the existing progress log.
-    bool gateLogValid;
-    bool stageLogValid;
-    u8 lastGateStage;
-    u8 lastGateHumans;
-    u8 lastGateFinished;
-    u8 lastGateHost;
-    u8 lastGateResults;
-    u8 lastGateRequested;
-    u8 lastGateCompleting;
-    u8 lastObservedStage;
-    u32 lastGateFrame;
+    bool cpuTimeoutApplied;
+    u16 nativeTimeoutFrames;
+    bool nativeTimeoutActive;
+    u16 hostFinishedMask;
+    u16 hostDisconnectedMask;
+    u16 loggedFinishedMask;
+    u16 loggedDisconnectedMask;
+    u16 loggedTimeoutMilestone;
+    u8 loggedStage;
+    u8 loggedActiveCount;
+    u8 loggedFinishedCount;
+    u8 loggedDisconnectedCount;
+    u8 loggedManagerFinishedCount;
+    bool terminalLogValid;
 };
 
 static FriendRoomCPUState s;
@@ -94,8 +76,6 @@ static bool GetFriendRoomSession(bool* isHost) {
     if (isFriendRoom) {
         s.active = true;
         s.host = roomType == RKNet::ROOMTYPE_FROOM_HOST;
-        if (System::sInstance && System::sInstance->IsContext(PULSAR_MODE_BATTLEROYALE))
-            s.battleRoyale = true;
         if (s.humans == 0) {
             const u8 playerCount = controller->subs[controller->currentSub].playerCount;
             if (playerCount != 0 && playerCount <= 12) s.humans = playerCount;
@@ -116,7 +96,6 @@ static bool GetFriendRoomSession(bool* isHost) {
     if (roomType != RKNet::ROOMTYPE_VS_REGIONAL) {
         s.active = false;
         s.host = false;
-        s.battleRoyale = false;
         s.humans = 0;
     }
     return false;
@@ -129,13 +108,6 @@ static bool IsFriendRoom() {
 static bool IsFriendRoomHost() {
     bool isHost = false;
     return GetFriendRoomSession(&isHost) && isHost;
-}
-
-static bool IsFriendRoomBattleRoyale() {
-    const System* system = System::sInstance;
-    return IsFriendRoom() &&
-           (s.battleRoyale || (system != nullptr &&
-                               system->IsContext(PULSAR_MODE_BATTLEROYALE)));
 }
 
 static bool IsSyntheticFriendRoomSlotInSession(u8 playerId);
@@ -166,74 +138,22 @@ static bool IsSyntheticFriendRoomSlotInSession(u8 playerId) {
     return racedata->racesScenario.players[playerId].GetPlayerType() != PLAYER_NONE;
 }
 
-static void LogFriendRoomFinishSnapshot(const char* phase, const Raceinfo* raceinfo) {
-    if (!phase || !raceinfo || !raceinfo->players) return;
-
-    const u8* order = raceinfo->playerIdInEachPosition;
-    OS::Report("[PULSAR] friend-finish %s stage=%u frame=%u order=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
-               phase, static_cast<u32>(raceinfo->stage), raceinfo->raceFrames, order ? order[0] : 0xff,
-               order ? order[1] : 0xff, order ? order[2] : 0xff, order ? order[3] : 0xff,
-               order ? order[4] : 0xff, order ? order[5] : 0xff, order ? order[6] : 0xff,
-               order ? order[7] : 0xff, order ? order[8] : 0xff, order ? order[9] : 0xff,
-               order ? order[10] : 0xff, order ? order[11] : 0xff);
-
-    for (u8 playerId = 0; playerId < 12; ++playerId) {
-        const RaceinfoPlayer* player = raceinfo->players[playerId];
-        if (!player) {
-            OS::Report("[PULSAR] friend-finish %s p=%u missing\n", phase, playerId);
-            continue;
-        }
-
-        const Timer* timer = player->raceFinishTime;
-        const u32 completionBits = *reinterpret_cast<const u32*>(&player->raceCompletion);
-        const u32 completionMaxBits = *reinterpret_cast<const u32*>(&player->raceCompletionMax);
-        if (timer) {
-            OS::Report("[PULSAR] friend-finish %s p=%u cpu=%u flags=0x%08x pos=%u lap=%u cp=%u completion=0x%08x completionMax=0x%08x timer=%u:%02u.%03u valid=%u\n",
-                       phase, playerId, IsFriendRoomCPU(playerId) ? 1 : 0, player->stateFlags,
-                       player->position, player->currentLap, player->checkpoint, completionBits,
-                       completionMaxBits, timer->minutes, timer->seconds, timer->milliseconds,
-                       timer->isActive ? 1 : 0);
-        } else {
-            OS::Report("[PULSAR] friend-finish %s p=%u cpu=%u flags=0x%08x pos=%u lap=%u cp=%u completion=0x%08x completionMax=0x%08x timer=null\n",
-                       phase, playerId, IsFriendRoomCPU(playerId) ? 1 : 0, player->stateFlags,
-                       player->position, player->currentLap, player->checkpoint, completionBits,
-                       completionMaxBits);
-        }
-    }
-}
-
-void LogFriendRoomRaceFinishEvent(Raceinfo* raceinfo, u8 playerId, const char* phase) {
-    if (!phase || !raceinfo || !IsFriendRoom() || playerId >= 12 || !raceinfo->players)
-        return;
-
-    const RaceinfoPlayer* player = raceinfo->players[playerId];
-    const Racedata* racedata = Racedata::sInstance;
-    const RKNet::Controller* controller = RKNet::Controller::sInstance;
-    const u32 finishedCounter = *reinterpret_cast<const u8*>(reinterpret_cast<const u8*>(raceinfo) + 0x1c);
-    const u32 scenarioType = racedata
-        ? static_cast<u32>(racedata->racesScenario.players[playerId].GetPlayerType())
-        : 0xff;
-    const u32 finishPos = racedata ? racedata->racesScenario.players[playerId].finishPos : 0xff;
-    const u32 completionBits = player ? *reinterpret_cast<const u32*>(&player->raceCompletion) : 0;
-    const u32 completionMaxBits = player ? *reinterpret_cast<const u32*>(&player->raceCompletionMax) : 0;
-
-    OS::Report("[PULSAR] friend-end event phase=%s p=%u cpu=%u type=%u room=%u host=%u stage=%u frame=%u finishedCounter=%u flags=0x%08x pos=%u finishPos=%u completion=0x%08x completionMax=0x%08x\n",
-               phase, playerId, IsFriendRoomCPU(playerId) ? 1 : 0, scenarioType,
-               controller ? static_cast<u32>(controller->roomType) : 0xff,
-               IsFriendRoomHost() ? 1 : 0, static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-               finishedCounter, player ? player->stateFlags : 0, player ? player->position : 0xff,
-               finishPos, completionBits, completionMaxBits);
-}
-
 // RaceModeOnlineVs::calc asks PacketMgr::GetRH2 for every non-local player.
-// Friend-room CPU identities are carried through our RH1 extension rather
-// than vanilla RH2, so keep this lookup on a valid empty record.  This also
-// protects the track-load path before the host-AID mapping has been copied to
-// the regular network tables.
+// Friend-room CPU identities are carried through the compact RH1 extension,
+// but the stock online decoder still consumes a normal RH2 record. Returning
+// that cached record keeps CPU finish timers and ahead masks on the native
+// RaceModeOnlineVs path.
 static RKNet::RACEHEADER2Packet s_friendRoomCPUEmptyRH2;
 
 static RKNet::RACEHEADER2Packet& GetFriendRoomRH2(RKNet::PacketMgr* packetMgr, u8 playerId) {
-    if (IsFriendRoomCPU(playerId)) {
+    if (playerId < 12 && GetFriendRoomSession(nullptr) && IsFriendRoomCPU(playerId)) {
+        // RaceModeOnlineVs::calc decodes RH2 for every non-REAL_LOCAL slot,
+        // including the host's synthetic CPU slots.  The host therefore must
+        // consume the same cached RH2 record that it publishes to remotes;
+        // returning an empty record here leaves the native finish timer and
+        // players-ahead mask at zero, so the host can wait forever while a
+        // remote already has the CPU's terminal state.
+        if (s.rh2Valid[playerId]) return s.rh2Data[playerId];
         memset(&s_friendRoomCPUEmptyRH2, 0, sizeof(s_friendRoomCPUEmptyRH2));
         return s_friendRoomCPUEmptyRH2;
     }
@@ -271,7 +191,12 @@ static u8 GetHumanPlayerCount(const RacedataScenario& scenario) {
         const RKNet::Controller* controller = RKNet::Controller::sInstance;
         if (controller != nullptr) {
             const u32 playerCount = controller->subs[controller->currentSub].playerCount;
-            if (playerCount != 0 && playerCount < 12) {
+            // A full room must refresh s.humans too, not fall through to the
+            // cached value. ResetFriendRoomCPURaceState deliberately preserves
+            // s.humans across races, so a room that grows to twelve between
+            // races would otherwise keep the previous smaller count and let the
+            // loop below overwrite real players with synthetic entries.
+            if (playerCount != 0 && playerCount <= 12) {
                 s.humans = static_cast<u8>(playerCount);
                 return s.humans;
             }
@@ -425,8 +350,6 @@ Mii* GetFriendRoomCPUDisplayMii(u8 playerId) {
 void ActivateFriendRoomCPUTransport(bool isHost) {
     s.active = true;
     s.host = isHost;
-    s.battleRoyale = System::sInstance != nullptr &&
-                     System::sInstance->IsContext(PULSAR_MODE_BATTLEROYALE);
 
     // FriendRoomRegional converts the room enum to VS_REGIONAL after reading
     // this sub record.  Preserve the original real-player count before any
@@ -628,17 +551,11 @@ static void ResetFriendRoomCPURaceState() {
     // FriendRoomRegional can convert the enum before the next race.
     const bool active = s.active;
     const bool host = s.host;
-    const bool battleRoyale = s.battleRoyale;
     const u8 humans = s.humans;
     memset(&s, 0, sizeof(s));
     s.active = active;
     s.host = host;
-    s.battleRoyale = battleRoyale;
     s.humans = humans;
-    memset(s.finishOrder, 0xFF, sizeof(s.finishOrder));
-    s.lastStage = 0xFF;
-    s.lastHumans = 0xFF;
-    s.lastFinished = 0xFF;
 }
 
 void PrepareFriendRoomCPUs(Racedata* racedata) {
@@ -711,518 +628,215 @@ void FinalizeFriendRoomCPUs() {
     SyncFriendRoomCPUSectionNames(false);
 }
 
-static bool IsFriendRoomRacePlayerDone(const RaceinfoPlayer* player) {
-    // Raceinfo::EndPlayerRace counts only the stock finished and disconnected
-    // flags.  Do not treat the intermediate finishing flag as complete here.
-    return player != nullptr && (player->stateFlags & (0x02 | 0x10)) != 0;
+static bool IsFriendRoomOnlineVS() {
+    const Racedata* racedata = Racedata::sInstance;
+    if (!racedata) return false;
+    const GameMode mode = racedata->racesScenario.settings.gamemode;
+    return mode == MODE_PRIVATE_VS || mode == MODE_PUBLIC_VS;
 }
 
-static bool IsFriendRoomHumanNoLongerRacing(const RaceinfoPlayer* player) {
-    // Royale's LapKO path calls RaceinfoPlayer::Vanish for an eliminated
-    // player.  Vanish sets 0x20 and does not call EndPlayerRace, so counting
-    // only 0x02/0x10 makes the host believe that eliminated remote humans are
-    // still racing.  Keep the stock predicate above for CPU finalization,
-    // but include the vanished state in the human-only one-racer gate.
-    return player != nullptr && (player->stateFlags & (0x02 | 0x10 | 0x20)) != 0;
+static u16 GetFriendRoomTimeoutLogMilestone(u16 frames) {
+    if (frames >= FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES) return FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES;
+    if (frames >= 1800) return 1800;
+    if (frames >= 900) return 900;
+    if (frames >= 300) return 300;
+    if (frames >= 60) return 60;
+    return frames == 0 ? 0 : 1;
 }
 
-static bool IsFriendRoomRaceEndReady(u32 humanCount, u32 finishedHumans) {
-    // Friend-room CPUs are synthetic slots. Apply the one-racer rule to the
-    // real-player subset only: the race is ready whenever zero or one humans
-    // remain unfinished. This also covers a room with one human from the
-    // beginning, as requested by the Friend Room rule.
-    return humanCount != 0 && finishedHumans <= humanCount &&
-           humanCount - finishedHumans <= 1;
+static bool IsFriendRoomFinishTimerValid(const Timer* timer) {
+    return timer && timer->isActive &&
+           (timer->minutes != 0 || timer->seconds != 0 || timer->milliseconds != 0);
 }
 
-static bool IsFriendRoomResultsReady() {
-    return IsFriendRoomHost() || s.resultsReady;
+static void LogFriendRoomTerminalState(const char* source, const Raceinfo* raceinfo) {
+    if (!raceinfo || !raceinfo->players) return;
+
+    u8 activeCount = 0;
+    u8 finishedCount = 0;
+    u8 disconnectedCount = 0;
+    for (u8 playerId = 0; playerId < 12; ++playerId) {
+        const RaceinfoPlayer* player = raceinfo->players[playerId];
+        if (!player) continue;
+
+        const u32 flags = player->stateFlags;
+        if (flags & 0x02) ++finishedCount;
+        if (flags & 0x10) ++disconnectedCount;
+        if ((flags & (0x02 | 0x10 | 0x20)) == 0) ++activeCount;
+    }
+
+    const u8* finishedCounter = reinterpret_cast<const u8*>(raceinfo) + 0x1c;
+    const u16 timeoutMilestone = GetFriendRoomTimeoutLogMilestone(s.nativeTimeoutFrames);
+    const u8 stage = static_cast<u8>(raceinfo->stage);
+    const bool changed = !s.terminalLogValid ||
+                         s.loggedFinishedMask != s.hostFinishedMask ||
+                         s.loggedDisconnectedMask != s.hostDisconnectedMask ||
+                         s.loggedTimeoutMilestone != timeoutMilestone ||
+                         s.loggedStage != stage ||
+                         s.loggedActiveCount != activeCount ||
+                         s.loggedFinishedCount != finishedCount ||
+                         s.loggedDisconnectedCount != disconnectedCount ||
+                         s.loggedManagerFinishedCount != *finishedCounter;
+    if (!changed) return;
+
+    OS::Report("[PULSAR] friend-terminal source=%s frame=%u stage=%u hostFinish=0x%04x hostDisconnect=0x%04x timeout=%u active=%u finished=%u disconnected=%u managerFinished=%u\n",
+               source, raceinfo->raceFrames, stage, s.hostFinishedMask,
+               s.hostDisconnectedMask, s.nativeTimeoutFrames, activeCount,
+               finishedCount, disconnectedCount, *finishedCounter);
+    s.loggedFinishedMask = s.hostFinishedMask;
+    s.loggedDisconnectedMask = s.hostDisconnectedMask;
+    s.loggedTimeoutMilestone = timeoutMilestone;
+    s.loggedStage = stage;
+    s.loggedActiveCount = activeCount;
+    s.loggedFinishedCount = finishedCount;
+    s.loggedDisconnectedCount = disconnectedCount;
+    s.loggedManagerFinishedCount = *finishedCounter;
+    s.terminalLogValid = true;
 }
 
-static bool GetFriendRoomHumanFinishCounts(const Raceinfo* raceinfo, u32* humanCount,
-                                           u32* finishedHumans, u8* unfinishedHumanId);
+static void ApplyReceivedFriendRoomTerminalState() {
+    bool isHost = false;
+    if (!GetFriendRoomSession(&isHost) || isHost || !IsFriendRoomOnlineVS() ||
+        (s.hostFinishedMask == 0 && s.hostDisconnectedMask == 0))
+        return;
 
-void CompleteFriendRoomCPURace(Raceinfo* raceinfo) {
-    // CPU finish times are host-authoritative.  Non-hosts use the CPU progress
-    // already reconstructed from the host's RACEDATA packets.  Once the stock
-    // online-VS rule leaves at most one human unfinished, close that last human
-    // and the synthetic slots through the stock finish path so RaceManager can
-    // leave RACE with valid timers and placement metadata.
-    if (s.completing || !raceinfo || !IsFriendRoom() ||
+    Raceinfo* raceinfo = Raceinfo::sInstance;
+    if (!raceinfo || !raceinfo->players || raceinfo->stage < RACESTAGE_RACE ||
         raceinfo->stage >= RACESTAGE_FINISHED)
         return;
 
-    // Royale uses the same immediate one-human threshold, but only the host
-    // may finalize the synthetic records.  Remote clients wait for the host's
-    // results-ready bit below.
-    if (IsFriendRoomBattleRoyale() && !IsFriendRoomHost()) return;
-
-    if (!IsFriendRoomResultsReady()) return;
-
-    if (!raceinfo->players) return;
-
-    u32 humanCount = 0;
-    u32 finishedHumans = 0;
-    u8 unfinishedHumanId = 0xff;
-    if (!GetFriendRoomHumanFinishCounts(raceinfo, &humanCount, &finishedHumans,
-                                        &unfinishedHumanId) ||
-        !IsFriendRoomRaceEndReady(humanCount, finishedHumans))
-        return;
-
-    s.completing = true;
-
-    if (!s.loggedCPU)
-        LogFriendRoomFinishSnapshot("before-cpu-finalize", raceinfo);
-
-    // RaceMode::endRace uses RaceManagerPlayer::endLocalRace(player, 2, 1)
-    // for unfinished local racers.  That routine derives an individual finish
-    // time from raceCompletion, so a CPU that is ahead of the last human stays
-    // ahead in the results and a CPU behind them stays behind.  Giving every
-    // CPU one cloned timer loses that information and makes the stock
-    // position calculator fall back to player-ID tie breaking.
-    typedef void (*EndLocalRaceFn)(RaceinfoPlayer*, u32, u32);
-
-    // This is the normal online-VS "last racer" behavior.  It is important to
-    // do this before the CPU slots: endRace snapshots the players-ahead mask
-    // and the finished-player counter while it writes the finish timer.
-    if (unfinishedHumanId != 0xff) {
-        RaceinfoPlayer* player = raceinfo->players[unfinishedHumanId];
-        if (player) {
-            OS::Report("[PULSAR] friend-finish finalizing-last-human p=%u frame=%u completion=0x%08x\n",
-                       unfinishedHumanId, raceinfo->raceFrames,
-                       *reinterpret_cast<const u32*>(&player->raceCompletion));
-            reinterpret_cast<EndLocalRaceFn>(kmRuntimeAddr(0x805342e8))(player, 2, 1);
-        }
-    }
-
-    const u8 cpuCount = GetFriendRoomCPUCount();
-    for (u8 cpuIndex = 0; cpuIndex < cpuCount; ++cpuIndex) {
-        const u8 playerId = GetFriendRoomCPUId(cpuIndex);
+    const u16 disconnectedMask = s.hostDisconnectedMask;
+    const u16 finishedMask = s.hostFinishedMask & ~disconnectedMask;
+    for (u8 playerId = 0; playerId < 12; ++playerId) {
         RaceinfoPlayer* player = raceinfo->players[playerId];
-        if (!player || IsFriendRoomRacePlayerDone(player)) continue;
-        reinterpret_cast<EndLocalRaceFn>(kmRuntimeAddr(0x805342e8))(player, 2, 1);
-    }
+        if (!player) continue;
 
-    // The position array was calculated before the CPUs received their final
-    // timers.  Re-run the stock online-VS position handler now so the
-    // authoritative order agrees with the timestamps just written above.
-    if (IsFriendRoomHost() && raceinfo->gamemodeData)
-        raceinfo->gamemodeData->HandlePositionTracking();
-
-    s.completing = false;
-
-    // The custom rule is about humans, not synthetic CPU records. The host
-    // has attempted to close the optional last human above and has attempted
-    // every CPU slot, so commit the intermediate stock state now. Do not wait
-    // for a CPU callback or for the stock all-record predicate: either one can
-    // be absent on a client that is already following the host's transition.
-    if (IsFriendRoomHost() && raceinfo->stage < RACESTAGE_IS_FINISHING) {
-        u32 finalHumanCount = 0;
-        u32 finalFinishedHumans = 0;
-        GetFriendRoomHumanFinishCounts(raceinfo, &finalHumanCount,
-                                       &finalFinishedHumans, nullptr);
-        OS::Report("[PULSAR] friend-finish host-state-commit stage=%u frame=%u humans=%u/%u\n",
-                   static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-                   finalFinishedHumans, finalHumanCount);
-        raceinfo->stage = RACESTAGE_IS_FINISHING;
-    }
-
-    if (!s.loggedCPU) {
-        LogFriendRoomFinishSnapshot("after-cpu-finalize", raceinfo);
-        s.loggedCPU = true;
-    }
-}
-
-static bool GetFriendRoomHumanFinishCounts(const Raceinfo* raceinfo, u32* humanCount,
-                                           u32* finishedHumans, u8* unfinishedHumanId) {
-    if (!humanCount || !finishedHumans || !raceinfo || !IsFriendRoom() || !raceinfo->players)
-        return false;
-
-    *humanCount = 0;
-    *finishedHumans = 0;
-    if (unfinishedHumanId) *unfinishedHumanId = 0xff;
-    for (u8 playerId = 0; playerId < 12; ++playerId) {
-        if (IsSyntheticFriendRoomSlotInSession(playerId)) continue;
-
-        ++(*humanCount);
-        if (IsFriendRoomHumanNoLongerRacing(raceinfo->players[playerId])) {
-            ++(*finishedHumans);
-        } else if (unfinishedHumanId) {
-            *unfinishedHumanId = playerId;
+        const u16 bit = static_cast<u16>(1u << playerId);
+        if (disconnectedMask & bit) {
+            if ((player->stateFlags & 0x10) == 0) {
+                raceinfo->SetPlayerDisconnected(playerId);
+                raceinfo->CheckEndRaceOnline(playerId);
+            }
+            continue;
         }
+
+        if ((finishedMask & bit) == 0 ||
+            (player->stateFlags & (0x02 | 0x10)) != 0)
+            continue;
+
+        // The mask is only a delivery/terminal hint.  Never manufacture a
+        // finish time from the local race clock: EndRace snapshots the
+        // players-ahead flags, and an artificial timestamp changes native
+        // placement ordering for every later finisher.  The stock RH2 pass
+        // will call EndRace once the authoritative timer arrives.
+        if (!IsFriendRoomFinishTimerValid(player->raceFinishTime))
+            continue;
+        player->EndRace(*player->raceFinishTime, false, 5);
     }
-    return *humanCount != 0;
 }
 
-// This is intentionally diagnostic only. It records the inputs to the custom
-// one-human gate at the point each caller sees them, including the source
-// hook. A stage change is logged independently so a later stock update that
-// overwrites our intermediate state is visible in the same log.
-static bool LogFriendRoomGateState(const char* source, const Raceinfo* raceinfo,
-                                   bool isHost, u32 humanCount, u32 finishedHumans) {
-    if (!source || !raceinfo || !raceinfo->players) return false;
+typedef void (*FriendRoomNativeRH2FinishFn)(GMDataOnlineVS*);
 
-    const u8 stage = static_cast<u8>(raceinfo->stage);
-    const u8 host = isHost ? 1 : 0;
-    const u8 results = s.resultsReady ? 1 : 0;
-    const u8 requested = s.requestedResults ? 1 : 0;
-    const u8 completing = s.completing ? 1 : 0;
-
-    if (!s.stageLogValid || s.lastObservedStage != stage) {
-        OS::Report("[PULSAR] friend-stage source=%s old=%u new=%u frame=%u room=%u host=%u resultsReady=%u requested=%u\n",
-                   source, s.stageLogValid ? static_cast<u32>(s.lastObservedStage) : 0xff,
-                   static_cast<u32>(stage), raceinfo->raceFrames,
-                   RKNet::Controller::sInstance
-                       ? static_cast<u32>(RKNet::Controller::sInstance->roomType)
-                       : 0xff,
-                   host, results, requested);
-        s.lastObservedStage = stage;
-        s.stageLogValid = true;
-    }
-
-    const bool changed = !s.gateLogValid ||
-                         s.lastGateStage != stage ||
-                         s.lastGateHumans != static_cast<u8>(humanCount) ||
-                         s.lastGateFinished != static_cast<u8>(finishedHumans) ||
-                         s.lastGateHost != host ||
-                         s.lastGateResults != results ||
-                         s.lastGateRequested != requested ||
-                         s.lastGateCompleting != completing;
-    const bool ready = IsFriendRoomRaceEndReady(humanCount, finishedHumans);
-    const bool heartbeat = !changed && ready &&
-                           raceinfo->raceFrames - s.lastGateFrame >= 60;
-    if (!changed && !heartbeat) return false;
-
-    const RKNet::Controller* controller = RKNet::Controller::sInstance;
-    const RKNet::ControllerSub* sub = controller
-        ? &controller->subs[controller->currentSub]
-        : (const RKNet::ControllerSub*)0;
-    u16 cpuMask = 0;
-    for (u8 playerId = 0; playerId < 12; ++playerId) {
-        const bool synthetic = s.cpu[playerId] ||
-                               (!s.rosterReady &&
-                                IsSyntheticFriendRoomSlotInSession(playerId));
-        if (synthetic) cpuMask |= static_cast<u16>(1u << playerId);
-    }
-
-    const u32 unfinishedHumans = humanCount >= finishedHumans
-        ? humanCount - finishedHumans
-        : 0;
-    OS::Report("[PULSAR] friend-gate source=%s room=%u host=%u royale=%u stage=%u frame=%u rawPlayers=%u cachedHumans=%u humans=%u/%u unfinished=%u ready=%u rosterReady=%u cpuCount=%u cpuMask=0x%04x cpuFinishMask=0x%04x resultsReady=%u requested=%u completing=%u localAid=%u hostAid=%u\n",
-               source, controller ? static_cast<u32>(controller->roomType) : 0xff,
-               host, IsFriendRoomBattleRoyale() ? 1 : 0, static_cast<u32>(stage),
-               raceinfo->raceFrames, sub ? static_cast<u32>(sub->playerCount) : 0xff,
-               static_cast<u32>(s.humans), humanCount, finishedHumans, unfinishedHumans,
-               ready ? 1 : 0, s.rosterReady ? 1 : 0, static_cast<u32>(s.cpuCount),
-               static_cast<u32>(cpuMask), static_cast<u32>(s.cpuFinishMask), results,
-               requested, completing, sub ? static_cast<u32>(sub->localAid) : 0xff,
-               sub ? static_cast<u32>(sub->hostAid) : 0xff);
-
-    // Slot details are emitted only on a state change, not on the heartbeat.
-    // This shows whether the host/remote player is actually being counted as
-    // human and which stock completion flag caused it to be counted finished.
-    if (changed) {
-        const Racedata* racedata = Racedata::sInstance;
-        for (u8 playerId = 0; playerId < 12; ++playerId) {
-            const RaceinfoPlayer* player = raceinfo->players[playerId];
-            const bool synthetic = (cpuMask & static_cast<u16>(1u << playerId)) != 0;
-            const u32 scenarioType = racedata
-                ? static_cast<u32>(racedata->racesScenario.players[playerId].GetPlayerType())
-                : 0xff;
-            const u32 completionBits = player
-                ? *reinterpret_cast<const u32*>(&player->raceCompletion)
-                : 0;
-            const u32 completionMaxBits = player
-                ? *reinterpret_cast<const u32*>(&player->raceCompletionMax)
-                : 0;
-            const Timer* timer = player ? player->raceFinishTime : (const Timer*)0;
-            OS::Report("[PULSAR] friend-gate-slot source=%s p=%u synthetic=%u type=%u flags=0x%08x humanDone=%u pos=%u lap=%u cp=%u completion=0x%08x completionMax=0x%08x timer=%u\n",
-                       source, playerId, synthetic ? 1 : 0, scenarioType,
-                       player ? player->stateFlags : 0,
-                       synthetic ? 0 : (IsFriendRoomHumanNoLongerRacing(player) ? 1 : 0),
-                       player ? player->position : 0xff,
-                       player ? player->currentLap : 0xff,
-                       player ? player->checkpoint : 0xff,
-                       completionBits, completionMaxBits,
-                       timer && timer->isActive ? 1 : 0);
-        }
-    }
-
-    s.gateLogValid = true;
-    s.lastGateStage = stage;
-    s.lastGateHumans = static_cast<u8>(humanCount);
-    s.lastGateFinished = static_cast<u8>(finishedHumans);
-    s.lastGateHost = host;
-    s.lastGateResults = results;
-    s.lastGateRequested = requested;
-    s.lastGateCompleting = completing;
-    s.lastGateFrame = raceinfo->raceFrames;
-    return changed || heartbeat;
-}
-
-static void LogFriendRoomEndProgress(Raceinfo* raceinfo, u32 humanCount, u32 finishedHumans) {
-    if (!raceinfo || raceinfo->stage < RACESTAGE_RACE || !raceinfo->players) return;
-
-    const bool changed = static_cast<u8>(raceinfo->stage) != s.lastStage ||
-                         humanCount != s.lastHumans ||
-                         finishedHumans != s.lastFinished;
-    const bool waitingForResults = IsFriendRoomRaceEndReady(humanCount, finishedHumans) &&
-                                   raceinfo->raceFrames - s.lastFrame >= 60;
-    if (!changed && !waitingForResults) return;
-
-    const u8 syntheticCount = GetFriendRoomCPUCount();
-    u8 finishedSynthetic = 0;
-    for (u8 cpuIndex = 0; cpuIndex < syntheticCount; ++cpuIndex) {
-        if (IsFriendRoomRacePlayerDone(raceinfo->players[GetFriendRoomCPUId(cpuIndex)]))
-            ++finishedSynthetic;
-    }
-
-    const RKNet::Controller* controller = RKNet::Controller::sInstance;
-    const u32 finishedCounter = *reinterpret_cast<const u8*>(reinterpret_cast<const u8*>(raceinfo) + 0x1c);
-    OS::Report("[PULSAR] friend-end progress stage=%u frame=%u room=%u host=%u humans=%u/%u synthetic=%u/%u finishedCounter=%u completing=%u\n",
-               static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-               controller ? static_cast<u32>(controller->roomType) : 0xff,
-               IsFriendRoomHost() ? 1 : 0, finishedHumans, humanCount,
-               finishedSynthetic, syntheticCount, finishedCounter,
-               s.completing ? 1 : 0);
-    LogFriendRoomFinishSnapshot("end-progress", raceinfo);
-
-    s.lastStage = static_cast<u8>(raceinfo->stage);
-    s.lastHumans = static_cast<u8>(humanCount);
-    s.lastFinished = static_cast<u8>(finishedHumans);
-    s.lastFrame = raceinfo->raceFrames;
-}
-
-static void ForceFriendRoomEndTransition(Raceinfo* raceinfo) {
-    if (!raceinfo || raceinfo->stage >= RACESTAGE_FINISHED) return;
-
-    if (raceinfo->stage >= RACESTAGE_IS_FINISHING) return;
-
-    // EndPlayerRace writes the intermediate state (3), then RaceManager::calc
-    // advances it to the final state (4) on the following frame. Do not ask
-    // the stock predicate to count synthetic CPUs here; the custom rule is
-    // explicitly about real humans, and CPU result records were already
-    // attempted by CompleteFriendRoomCPURace.
-    if (!s.loggedEnd) {
-        OS::Report("[PULSAR] friend-finish forcing-results stage=%u frame=%u\n",
-                   static_cast<u32>(raceinfo->stage), raceinfo->raceFrames);
-        s.loggedEnd = true;
-    }
-    raceinfo->stage = RACESTAGE_IS_FINISHING;
-}
-
-static void ForceFriendRoomRoyaleRemoteEndTransition(Raceinfo* raceinfo) {
+static void ApplyFriendRoomNativeRH2Finish(GMDataOnlineVS* mode) {
+    reinterpret_cast<FriendRoomNativeRH2FinishFn>(kmRuntimeAddr(0x8053e680))(mode);
+    ApplyReceivedFriendRoomTerminalState();
     bool isHost = false;
-    if (!raceinfo || !IsFriendRoomBattleRoyale() ||
-        !GetFriendRoomSession(&isHost) || isHost || !s.resultsReady ||
-        raceinfo->stage < RACESTAGE_RACE || raceinfo->stage >= RACESTAGE_FINISHED)
+    if (GetFriendRoomSession(&isHost) && !isHost)
+        LogFriendRoomTerminalState("native-rh2", Raceinfo::sInstance);
+}
+
+// RaceModeOnlineVs::calc calls the stock RH2 finish pass here.  Applying the
+// host's terminal mask immediately after that pass keeps CPU/human records in
+// the same native state before position tracking, timeout, and scene logic.
+kmCall(0x8053f2f4, ApplyFriendRoomNativeRH2Finish);
+
+static void ApplyReceivedFriendRoomNativeTimeout() {
+    bool isHost = false;
+    if (!s.nativeTimeoutActive || !GetFriendRoomSession(&isHost) || isHost ||
+        !IsFriendRoomOnlineVS())
         return;
 
-    if (!s.loggedEnd) {
-        OS::Report("[PULSAR] friend-finish royale-remote-results stage=%u frame=%u cpuMask=0x%04x\n",
-                   static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-                   s.cpuFinishMask);
-        s.loggedEnd = true;
-    }
-    raceinfo->stage = RACESTAGE_IS_FINISHING;
-}
-
-static void RequestFriendRoomResults(Raceinfo* raceinfo) {
-    if (s.requestedResults || !raceinfo || !IsFriendRoom() ||
-        IsFriendRoomBattleRoyale())
-        return;
-
-    // The host is authoritative for the shared transition.  A non-host must
-    // not leave its HUD merely because its local copy happened to mark the
-    // last human finished first; wait for the host's RH1 results-ready bit.
-    if (IsFriendRoomHost()) {
-        if (raceinfo->stage < RACESTAGE_FINISHED) return;
-    } else if (!s.resultsReady) {
-        return;
-    }
-
-    Pages::RaceHUD* raceHud = Pages::RaceHUD::sInstance;
-    if (!raceHud || raceHud->currentState != STATE_ACTIVE) return;
-
-    // Keep the stock per-race results destination.  PAGE_WIFI_VS_RESULTS is
-    // the friend-room final/congratulations page reached from the total
-    // leaderboard, not the basic results page shown after this race.
-    s.requestedResults = true;
-    raceHud->nextPageId = PAGE_GPVS_LEADERBOARD_UPDATE;
-    raceHud->EndState();
-    OS::Report("[PULSAR] friend-finish request-results stage=%u frame=%u page=%u\n",
-               static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-               static_cast<u32>(raceHud->nextPageId));
-}
-
-// RaceHUD's stock friend-room path ends the HUD after the local finish
-// message has been visible for 120 frames.  That is only a presentation
-// timeout; it does not mean the shared race is ready to leave RACE.  With
-// synthetic CPUs that timeout would send the room to PAGE_WWRACEEND_WAIT and
-// voting while remote humans were still driving.  Hold that call until
-// RequestFriendRoomResults has armed the synchronized results transition.
-typedef void (*EndStateAnimatedFn)(Pages::RaceHUD*, u32, float);
-
-static void EndFriendRoomHUDAfterSharedFinish(Pages::RaceHUD* raceHud, u32 animDirection,
-                                              float animLength) {
-    if (raceHud && IsFriendRoom()) {
-        const bool isRoyale = IsFriendRoomBattleRoyale();
-        const Raceinfo* raceinfo = Raceinfo::sInstance;
-        const bool royaleStillRacing = isRoyale &&
-            (raceinfo == nullptr || raceinfo->stage < RACESTAGE_IS_FINISHING);
-        if ((!isRoyale && !s.requestedResults) || royaleStillRacing)
-            return;
-    }
-
-    reinterpret_cast<EndStateAnimatedFn>(kmRuntimeAddr(0x80602488))(raceHud, animDirection, animLength);
-}
-
-// This is the automatic finish-message timeout in RaceHUD::AfterControlUpdate.
-kmCall(0x80857a0c, EndFriendRoomHUDAfterSharedFinish);
-
-static bool CanEndFriendRoomRace(GMData* raceMode) {
-    if (!raceMode) return false;
-    // Raceinfo::EndPlayerRace counts the expanded twelve-slot scenario. That
-    // stock predicate is intentionally disabled for Friend Rooms; the host's
-    // human-only gate below owns the one-racer transition and non-hosts follow
-    // the host's results-ready packet.
-    return IsFriendRoom() ? false : raceMode->CanRaceEnd();
-}
-
-static bool TryEndFriendRoomRace(GMData* raceMode, u32 finishedCount, u32 playerCount) {
-    if (!raceMode) return false;
-    return IsFriendRoom() ? false : raceMode->vf_0x24(finishedCount, playerCount);
-}
-
-static void AutoEndFriendRoomRace(Raceinfo* raceinfo, u32 humanCount, u32 finishedHumans) {
-    if (!IsFriendRoom()) return;
+    Raceinfo* raceinfo = Raceinfo::sInstance;
     if (!raceinfo || raceinfo->stage < RACESTAGE_RACE ||
         raceinfo->stage >= RACESTAGE_FINISHED)
         return;
 
-    // The host owns the human-only decision. Once it has published the
-    // results-ready bit, non-hosts must not wait for their local RH2 finish
-    // flags to catch up before leaving the race.
-    if (!IsFriendRoomHost()) {
-        if (!s.resultsReady) return;
-        if (IsFriendRoomBattleRoyale())
-            ForceFriendRoomRoyaleRemoteEndTransition(raceinfo);
-        else
-            ForceFriendRoomEndTransition(raceinfo);
-        return;
+    // Ghidra: RaceModeOnlineVs::_10c is the frame counter used by the stock
+    // 1,801-frame timeout at 0x8053ec40.  The host's value is authoritative;
+    // never move a remote counter backwards when packets arrive out of order.
+    if (raceinfo->gamemodeData) {
+        u8* modeBytes = reinterpret_cast<u8*>(raceinfo->gamemodeData);
+        u32* timeoutFrames = reinterpret_cast<u32*>(modeBytes + 0x10c);
+        if (*timeoutFrames < s.nativeTimeoutFrames)
+            *timeoutFrames = s.nativeTimeoutFrames;
     }
 
-    if (!IsFriendRoomRaceEndReady(humanCount, finishedHumans)) return;
+    // Ghidra: Raceinfo's finished-player counter is the byte at +0x1c used
+    // by 0x8053ec40 to decide whether _10c should advance.  A host CPU finish
+    // is not otherwise present in the remote RaceManager, so publish the
+    // native "at least one player finished" prerequisite without changing
+    // the native end/results state machine.
+    u8* finishedCount = reinterpret_cast<u8*>(raceinfo) + 0x1c;
+    if (*finishedCount == 0) *finishedCount = 1;
+}
 
-    if (IsFriendRoomBattleRoyale()) {
-        // A remote finish can leave one HUMAN unfinished without producing
-        // another local EndPlayerRace callback.  Finalize that record and the
-        // synthetic slots through the stock path, then broadcast the shared
-        // results-ready state.
-        if (!IsFriendRoomHost()) return;
+typedef bool (*FriendRoomNativeTimeoutFn)(GMDataOnlineVS*);
 
-        u32 currentHumanCount = 0;
-        u32 currentFinishedHumans = 0;
-        if (!GetFriendRoomHumanFinishCounts(raceinfo, &currentHumanCount,
-                                            &currentFinishedHumans, nullptr))
-            return;
-
-        CompleteFriendRoomCPURace(raceinfo);
-
-        if (!s.loggedEnd) {
-            OS::Report("[PULSAR] friend-finish royale-host-results stage=%u frame=%u humans=%u/%u\n",
-                       static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-                       currentFinishedHumans, currentHumanCount);
-            s.loggedEnd = true;
-        }
-        s.requestedResults = true;
-        raceinfo->stage = RACESTAGE_IS_FINISHING;
+static void StopFriendRoomCPUsAtNativeTimeout() {
+    if (s.cpuTimeoutApplied || !GetFriendRoomSession(nullptr) ||
+        !IsFriendRoomOnlineVS())
         return;
-    }
-
-    // The normal finish callback handles this case.  Keep the update fallback
-    // so a final human finish received through the network still finalizes
-    // the synthetic slots before the stock results transition.
-    CompleteFriendRoomCPURace(raceinfo);
-    ForceFriendRoomEndTransition(raceinfo);
-}
-
-static void UpdateFriendRoomFinishGateFrom(const char* source);
-
-// RaceScene skips the AI-manager call while Raceinfo is in its spectator
-// update path.  Keep the host's one-human gate reachable from the race update
-// hook as well; normal frames return immediately because the human count is
-// not ready or the stage has already advanced.
-static void CheckFriendRoomHostRaceEnd() {
-    UpdateFriendRoomFinishGateFrom("race-frame");
-}
-
-static RaceFrameHook friendRoomHostRaceEndHook(CheckFriendRoomHostRaceEnd);
-
-static void UpdateFriendRoomFinishGateFrom(const char* source) {
-    bool isHost = false;
-    if (!GetFriendRoomSession(&isHost)) return;
 
     Raceinfo* raceinfo = Raceinfo::sInstance;
-    u32 humanCount = 0;
-    u32 finishedHumans = 0;
-    if (!GetFriendRoomHumanFinishCounts(raceinfo, &humanCount, &finishedHumans, nullptr))
+    if (!raceinfo || !raceinfo->players || raceinfo->stage < RACESTAGE_RACE ||
+        raceinfo->stage >= RACESTAGE_FINISHED)
         return;
 
-    const bool loggedState = LogFriendRoomGateState(source, raceinfo, isHost,
-                                                    humanCount, finishedHumans);
-    if (loggedState) {
-        const char* action = "skip-stage";
-        if (raceinfo->stage >= RACESTAGE_RACE && raceinfo->stage < RACESTAGE_FINISHED) {
-            if (!isHost)
-                action = s.resultsReady ? "follow-host-results" : "wait-results-packet";
-            else if (!IsFriendRoomRaceEndReady(humanCount, finishedHumans))
-                action = "wait-human-threshold";
-            else if (IsFriendRoomBattleRoyale())
-                action = "commit-royale-results";
-            else
-                action = "commit-human-threshold";
-        }
-        OS::Report("[PULSAR] friend-gate-decision source=%s action=%s stage=%u frame=%u humans=%u/%u unfinished=%u\n",
-                   source ? source : "unknown", action, static_cast<u32>(raceinfo->stage),
-                   raceinfo->raceFrames, finishedHumans, humanCount,
-                   humanCount >= finishedHumans ? humanCount - finishedHumans : 0);
+    s.cpuTimeoutApplied = true;
+    const u8 cpuCount = GetFriendRoomCPUCount();
+    for (u8 cpuIndex = 0; cpuIndex < cpuCount; ++cpuIndex) {
+        const u8 playerId = GetFriendRoomCPUId(cpuIndex);
+        RaceinfoPlayer* player = raceinfo->players[playerId];
+        if (!player || (player->stateFlags & (0x02 | 0x10 | 0x20)) != 0) continue;
+
+        // A CPU which has not crossed the line is not a finisher.  Stop it
+        // first, then run the stock disconnect transition immediately.  The
+        // normal RaceModeOnlineVs pass does this on its next iteration, but a
+        // remote client can otherwise leave the CPU in STOPPED while its
+        // local race-end check is already waiting for terminal players.
+        raceinfo->SetPlayerDisconnected(playerId);
+        raceinfo->CheckEndRaceOnline(playerId);
     }
-
-    LogFriendRoomEndProgress(raceinfo, humanCount, finishedHumans);
-
-    if (!s.loggedGate && IsFriendRoomRaceEndReady(humanCount, finishedHumans)) {
-        OS::Report("[PULSAR] friend-finish boundary host=%u royale=%u stage=%u frame=%u humans=%u/%u\n",
-                   isHost ? 1 : 0, IsFriendRoomBattleRoyale() ? 1 : 0,
-                   static_cast<u32>(raceinfo->stage), raceinfo->raceFrames,
-                   finishedHumans, humanCount);
-        s.loggedGate = true;
-    }
-
-    // This is deliberately callable after RaceScene::UpdateRaceInstances.
-    // That update is where stock RaceModeOnlineVs consumes remote finish
-    // timers and sets their FINISHED flags; the AI-manager hook can run before
-    // those flags are visible on the host for the current frame.
-    AutoEndFriendRoomRace(raceinfo, humanCount, finishedHumans);
-    RequestFriendRoomResults(raceinfo);
-
-    // AutoEndFriendRoomRace can change stage and can finalize the last human,
-    // so take a second bounded observation after both transition attempts.
-    u32 finalHumanCount = 0;
-    u32 finalFinishedHumans = 0;
-    if (GetFriendRoomHumanFinishCounts(raceinfo, &finalHumanCount, &finalFinishedHumans, nullptr))
-        LogFriendRoomGateState(source, raceinfo, isHost, finalHumanCount, finalFinishedHumans);
 }
 
-void UpdateFriendRoomFinishGate() {
-    UpdateFriendRoomFinishGateFrom("race-instances");
+static bool UpdateFriendRoomNativeTimeout(GMDataOnlineVS* mode) {
+    // The stock timeout checks RaceManager::m_finishedPlayerCount before it
+    // increments _10c.  Apply both host state and the replicated counter
+    // before entering the native function, not after it.
+    ApplyReceivedFriendRoomTerminalState();
+    ApplyReceivedFriendRoomNativeTimeout();
+    const bool timedOut = reinterpret_cast<FriendRoomNativeTimeoutFn>(
+        kmRuntimeAddr(0x8053ec40))(mode);
+    if (timedOut ||
+        (!IsFriendRoomHost() && s.nativeTimeoutActive &&
+         s.nativeTimeoutFrames >= FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES)) {
+        // The host's RH1 is assembled before RaceModeOnlineVs::calc advances
+        // _10c.  A remote can therefore receive the terminal value one frame
+        // before its local stock timeout returns true. Stop the synthetic
+        // slots at that boundary; the native race manager still decides when
+        // the scene can enter results.
+        StopFriendRoomCPUsAtNativeTimeout();
+    }
+    ApplyReceivedFriendRoomTerminalState();
+    bool isHost = false;
+    if (GetFriendRoomSession(&isHost) && !isHost)
+        LogFriendRoomTerminalState("native-timeout", Raceinfo::sInstance);
+    return timedOut;
 }
 
-// Raceinfo::EndPlayerRace calls these two race-mode gates before transitioning
-// to the finished state. Friend Rooms use the update-side human-only authority
-// instead of the expanded stock player count.
-kmCall(0x80533d2c, CanEndFriendRoomRace);
-kmCall(0x80533d58, TryEndFriendRoomRace);
+// RaceModeOnlineVs::calc calls FUN_8053ec40 here.  Keep the native 1,801-frame
+// countdown and only bridge its terminal event to the synthetic CPU records.
+kmCall(0x8053f39c, UpdateFriendRoomNativeTimeout);
 
 typedef void* (*RacedataFactoryFlagsConstructFn)(void* flags);
 typedef void* (*RacedataFactoryConstructFn)(void* sender, void* flags);
@@ -1237,7 +851,6 @@ kmRuntimeUse(0x8058cb30);
 kmRuntimeUse(0x80653abc);
 kmRuntimeUse(0x806544a8);
 kmRuntimeUse(0x8058f820);
-kmRuntimeUse(0x806465e0);
 
 static void BindHostRacedataFactory(u8 playerId, Kart::Player* kart) {
     if (!kart || playerId >= 12) return;
@@ -1334,6 +947,56 @@ kmCall(0x8058a1d0, GetFriendRoomRACEDATA);
 kmCall(0x80589ab4, GetFriendRoomPlayerRH1Timer);
 kmCall(0x80589ad8, GetFriendRoomPlayerRH1Timer);
 
+typedef int (*FriendRoomRH2PackFn)(GMDataOnlineVS*);
+
+static bool PackFriendRoomCPUHeader(GMDataOnlineVS* mode, u8 playerId,
+                                    RKNet::RACEHEADER2Packet* output) {
+    if (!mode || !output || playerId >= 12) return false;
+
+    // RaceModeOnlineVs::PackRH2 uses localPlayerIds at 0x108/0x109. Save the
+    // complete RH2/state tail because the packer also updates its bit masks
+    // and packer parameters while producing the record.
+    u8 savedState[0x7c];
+    u8 savedPlayer[sizeof(GMDataOnlineVSPlayer)];
+    u8* modeBytes = reinterpret_cast<u8*>(mode);
+    memcpy(savedState, modeBytes + 0xf8, sizeof(savedState));
+    memcpy(savedPlayer, &mode->players[playerId], sizeof(savedPlayer));
+
+    // The stock packer normally gets these values from the receive-side RH2
+    // timer array. A CPU is local to the host, so mirror its actual
+    // RaceinfoPlayer finish state into the same fields for this temporary
+    // pack. This makes the remote decoder see the CPU's native finish bit and
+    // timer instead of only receiving a movement-shaped empty RH2.
+    Raceinfo* raceinfo = Raceinfo::sInstance;
+    RaceinfoPlayer* racePlayer = 0;
+    if (raceinfo && raceinfo->players)
+        racePlayer = raceinfo->players[playerId];
+    const u32 stateFlags = racePlayer ? racePlayer->stateFlags : 0;
+    const bool finished = (stateFlags & 0x02) != 0 && racePlayer &&
+                          IsFriendRoomFinishTimerValid(racePlayer->raceFinishTime);
+    const bool disconnected = (stateFlags & 0x10) != 0;
+    // GMDataOnlineVS initializes remote-player timers inactive.  A
+    // RaceinfoPlayer owns an active zeroed timer from construction, so copy
+    // it only after the player has actually finished; otherwise the RH2
+    // packer advertises a valid 0:00 finish record for every CPU.
+    if (finished)
+        mode->players[playerId].raceFinishTime = *racePlayer->raceFinishTime;
+    else
+        mode->players[playerId].raceFinishTime.isActive = false;
+    *reinterpret_cast<u16*>(reinterpret_cast<u8*>(&mode->players[playerId]) + 0xc) =
+        finished ? static_cast<u16>(1u << playerId) : 0;
+    *reinterpret_cast<u16*>(reinterpret_cast<u8*>(&mode->players[playerId]) + 0x10) =
+        disconnected ? static_cast<u16>(1u << playerId) : 0;
+    modeBytes[0x108] = playerId;
+    modeBytes[0x109] = 0xff;
+
+    reinterpret_cast<FriendRoomRH2PackFn>(kmRuntimeAddr(0x8053e7ac))(mode);
+    memcpy(output, &mode->rh2Packet, sizeof(*output));
+    memcpy(&mode->players[playerId], savedPlayer, sizeof(savedPlayer));
+    memcpy(modeBytes + 0xf8, savedState, sizeof(savedState));
+    return true;
+}
+
 bool WriteFriendRoomCPUState(PulRH1* packet) {
     bool isHost = false;
     if (!packet || !GetFriendRoomSession(&isHost) || !isHost) return false;
@@ -1346,36 +1009,42 @@ bool WriteFriendRoomCPUState(PulRH1* packet) {
     sync->magic = FRIEND_ROOM_CPU_MAGIC;
     sync->cpuCount = cpuCount;
     sync->raceDataPlayerId = 0xff;
-    sync->cpuFinishMask = 0;
+    sync->rh2PlayerId = 0xff;
+    sync->nativeTimeoutFrames = 0;
+    sync->nativeTimeoutActive = 0;
+    sync->hostFinishedMask = 0;
+    sync->hostDisconnectedMask = 0;
 
     const Raceinfo* raceinfo = Raceinfo::sInstance;
     const u32 sequence = raceinfo ? raceinfo->raceFrames : 0;
-    const bool royaleResultsReady = IsFriendRoomBattleRoyale() && raceinfo &&
-                                    raceinfo->stage >= RACESTAGE_IS_FINISHING;
-    sync->reserved = (s.requestedResults || royaleResultsReady)
-                         ? FRIEND_ROOM_CPU_FLAG_RESULTS_READY
-                         : 0;
-    if ((s.requestedResults || royaleResultsReady) && !s.loggedReady) {
-        OS::Report("[PULSAR] friend-finish host-results-ready frame=%u royale=%u\n",
-                   sequence, royaleResultsReady ? 1 : 0);
-        s.loggedReady = true;
-    }
-
-    for (u8 position = 0; position < 12; ++position)
-        sync->finishOrder[position] = position;
-
     sync->raceDataSequence = sequence;
-    if (raceinfo && raceinfo->playerIdInEachPosition)
-        memcpy(sync->finishOrder, raceinfo->playerIdInEachPosition, sizeof(sync->finishOrder));
 
     if (raceinfo && raceinfo->players) {
-        for (u8 cpuIndex = 0; cpuIndex < cpuCount; ++cpuIndex) {
-            const u8 playerId = GetFriendRoomCPUId(cpuIndex);
+        for (u8 playerId = 0; playerId < 12; ++playerId) {
             const RaceinfoPlayer* player = raceinfo->players[playerId];
-            if (player && ((player->stateFlags & (0x02 | 0x10)) != 0 ||
-                           (player->raceFinishTime && player->raceFinishTime->isActive)))
-                sync->cpuFinishMask |= static_cast<u16>(1u << playerId);
+            if (!player) continue;
+
+            const u16 bit = static_cast<u16>(1u << playerId);
+            if (player->stateFlags & 0x02) sync->hostFinishedMask |= bit;
+            if (player->stateFlags & (0x10 | 0x20))
+                sync->hostDisconnectedMask |= bit;
         }
+    }
+
+    if (raceinfo && IsFriendRoomOnlineVS() && raceinfo->gamemodeData) {
+        const u32 nativeTimeoutFrames = *reinterpret_cast<const u32*>(
+            reinterpret_cast<const u8*>(raceinfo->gamemodeData) + 0x10c);
+        // RH1 is built before the native RaceModeOnlineVs::calc call. Carry
+        // the value that will exist after that call so the remote cannot miss
+        // the terminal 1,801-frame packet when the host changes scenes.
+        const u32 nextNativeTimeoutFrames =
+            nativeTimeoutFrames == 0
+                ? 0
+                : (nativeTimeoutFrames < FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES
+                       ? nativeTimeoutFrames + 1
+                       : FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES);
+        sync->nativeTimeoutFrames = static_cast<u16>(nextNativeTimeoutFrames);
+        sync->nativeTimeoutActive = sync->nativeTimeoutFrames != 0;
     }
 
     RKNet::Controller* controller = RKNet::Controller::sInstance;
@@ -1420,6 +1089,20 @@ bool WriteFriendRoomCPUState(PulRH1* packet) {
             memcpy(&sync->raceData, reinterpret_cast<u8*>(sender) + 0x14, sizeof(sync->raceData));
         }
     }
+
+    // RH2 is the stock online finish transport. Pack one CPU's normal RH2
+    // record per RH1 and rotate it with the movement record above.
+    if (raceinfo && IsFriendRoomOnlineVS() && raceinfo->gamemodeData) {
+        RKNet::RACEHEADER2Packet rh2 = {};
+        GMDataOnlineVS* mode = reinterpret_cast<GMDataOnlineVS*>(raceinfo->gamemodeData);
+        if (PackFriendRoomCPUHeader(mode, raceDataPlayerId, &rh2)) {
+            sync->rh2PlayerId = raceDataPlayerId;
+            memcpy(&sync->rh2Data, &rh2, sizeof(rh2));
+            memcpy(&s.rh2Data[raceDataPlayerId], &rh2, sizeof(rh2));
+            s.rh2Seq[raceDataPlayerId] = sequence;
+            s.rh2Valid[raceDataPlayerId] = true;
+        }
+    }
     return true;
 }
 
@@ -1445,30 +1128,6 @@ void ReadFriendRoomCPUState(const PulRH1* packet, u32 packetSize, u8 senderAid) 
         ApplyFriendRoomCPUItemPacket(playerId, sync->items[i]);
         controller->aidsBelongingToPlayerIds[playerId] = senderAid;
     }
-    s.cpuFinishMask = sync->cpuFinishMask;
-    if (sync->reserved & FRIEND_ROOM_CPU_FLAG_RESULTS_READY) {
-        s.resultsReady = true;
-        if (!s.loggedReady) {
-            OS::Report("[PULSAR] friend-finish remote-results-ready frame=%u\n",
-                       sync->raceDataSequence);
-            s.loggedReady = true;
-        }
-    }
-
-    bool validFinishOrder = true;
-    u16 finishOrderMask = 0;
-    for (u8 position = 0; position < 12; ++position) {
-        const u8 playerId = sync->finishOrder[position];
-        if (playerId >= 12 || (finishOrderMask & (1 << playerId)) != 0) {
-            validFinishOrder = false;
-            break;
-        }
-        finishOrderMask |= 1 << playerId;
-    }
-    if (validFinishOrder) {
-        memcpy(s.finishOrder, sync->finishOrder, sizeof(s.finishOrder));
-        s.finishValid = true;
-    }
 
     const u8 raceDataPlayerId = sync->raceDataPlayerId;
     if (raceDataPlayerId < 12 && IsFriendRoomCPU(raceDataPlayerId) &&
@@ -1478,23 +1137,35 @@ void ReadFriendRoomCPUState(const PulRH1* packet, u32 packetSize, u8 senderAid) 
         s.raceSeq[raceDataPlayerId] = sync->raceDataSequence;
         s.raceValid[raceDataPlayerId] = true;
     }
-}
 
-static void ApplyReceivedFriendRoomCPUFinishState() {
-    bool isHost = false;
-    if (!s.cpuFinishMask || !GetFriendRoomSession(&isHost) || isHost) return;
-
-    Raceinfo* raceinfo = Raceinfo::sInstance;
-    if (!raceinfo || !raceinfo->players) return;
-
-    const u8 cpuCount = GetFriendRoomCPUCount();
-    for (u8 cpuIndex = 0; cpuIndex < cpuCount; ++cpuIndex) {
-        const u8 playerId = GetFriendRoomCPUId(cpuIndex);
-        if ((s.cpuFinishMask & static_cast<u16>(1u << playerId)) == 0) continue;
-
-        RaceinfoPlayer* player = raceinfo->players[playerId];
-        if (player) player->stateFlags |= 0x02;
+    const u8 rh2PlayerId = sync->rh2PlayerId;
+    if (rh2PlayerId < 12 && IsFriendRoomCPU(rh2PlayerId) &&
+        (!s.rh2Valid[rh2PlayerId] ||
+         sync->raceDataSequence != s.rh2Seq[rh2PlayerId])) {
+        memcpy(&s.rh2Data[rh2PlayerId], &sync->rh2Data, sizeof(sync->rh2Data));
+        s.rh2Seq[rh2PlayerId] = sync->raceDataSequence;
+        s.rh2Valid[rh2PlayerId] = true;
     }
+
+    if (sync->nativeTimeoutActive) {
+        if (!s.nativeTimeoutActive ||
+            sync->nativeTimeoutFrames > s.nativeTimeoutFrames)
+            s.nativeTimeoutFrames = sync->nativeTimeoutFrames;
+        s.nativeTimeoutActive = true;
+    }
+
+    s.hostFinishedMask |= sync->hostFinishedMask;
+    s.hostDisconnectedMask |= sync->hostDisconnectedMask;
+    LogFriendRoomTerminalState("rh1-recv", Raceinfo::sInstance);
+
+    // Apply immediately as well as from the race update hook.  Once a local
+    // racer finishes, RaceScene can enter its spectator update path, which
+    // does not call the AI-manager hook on every frame.
+    ApplyReceivedFriendRoomTerminalState();
+    ApplyReceivedFriendRoomNativeTimeout();
+    if (s.nativeTimeoutActive &&
+        s.nativeTimeoutFrames >= FRIEND_ROOM_NATIVE_TIMEOUT_FRAMES)
+        StopFriendRoomCPUsAtNativeTimeout();
 }
 
 static void ApplyReceivedCPUItems() {
@@ -1524,102 +1195,7 @@ static void ApplyReceivedCPUItems() {
     }
 }
 
-static void ApplyReceivedFriendRoomFinishOrder() {
-    bool isHost = false;
-    if (!s.finishValid || !GetFriendRoomSession(&isHost) || isHost) return;
-
-    Raceinfo* raceinfo = Raceinfo::sInstance;
-    Racedata* racedata = Racedata::sInstance;
-    if (!raceinfo || !raceinfo->playerIdInEachPosition || !racedata) return;
-
-    const bool orderChanged = memcmp(raceinfo->playerIdInEachPosition, s.finishOrder,
-                                     sizeof(s.finishOrder)) != 0;
-    // During the race the stock order is allowed to remain untouched until
-    // the host sends a new order.  At the result boundary force the rank
-    // fields once so a stock write cannot leave stale result rows behind.
-    if (!orderChanged && raceinfo->stage < RACESTAGE_FINISHED) return;
-    if (orderChanged)
-        memcpy(raceinfo->playerIdInEachPosition, s.finishOrder,
-               sizeof(s.finishOrder));
-
-    // The result scene reads RacedataPlayer::finishPos, while race HUD and
-    // leaderboard code read RaceinfoPlayer::position and the order array.
-    // Update all three views from the host's authoritative order.
-    for (u8 position = 0; position < 12; ++position) {
-        const u8 playerId = s.finishOrder[position];
-        if (playerId >= 12) continue;
-
-        if (raceinfo->players && raceinfo->players[playerId])
-            raceinfo->players[playerId]->position = position + 1;
-        racedata->racesScenario.players[playerId].finishPos = position + 1;
-        racedata->menusScenario.players[playerId].finishPos = position + 1;
-        racedata->menusScenario.players[playerId].gpRank = position + 1;
-    }
-
-    if (!s.loggedRemote && raceinfo->stage >= RACESTAGE_FINISHED) {
-        LogFriendRoomFinishSnapshot("nonhost-final-order", raceinfo);
-        s.loggedRemote = true;
-    }
-}
-
 static void RefreshReceivedFriendRoomCPUState();
-
-// WiFiVSResults::OnActivate stores this flag at 0x15f7.  For the normal
-// friend-room sections the stock value is false until the final GP race, and
-// AfterEntranceAnimations immediately replaces the page when it is false.
-// That is why forcing RaceHUD to PAGE_WIFI_VS_RESULTS previously appeared to
-// skip the results screen entirely.
-//
-// This replaces only the stock store instruction.  Return the page pointer in
-// r3 because the following stock instructions use r3 again after the call.
-static void* SetFriendRoomResultsDisplayFlag(void* page) {
-    if (page == nullptr) return page;
-
-    SectionMgr* const sectionMgr = SectionMgr::sInstance;
-    u32 displayResults = 0;
-    if (sectionMgr != nullptr && sectionMgr->curSection != nullptr) {
-        const u32 sectionId = static_cast<u32>(sectionMgr->curSection->sectionId);
-        if (sectionMgr->sectionParams != nullptr) {
-            // Friend VS result sections are the contiguous 0x70..0x77 block;
-            // the low two-bit group selects VS (0) or battle (2).
-            const u32 friendSection = sectionId - SECTION_P1_WIFI_FRIEND_VS;
-            if (friendSection < 8 && (friendSection & 2) == 0) {
-                displayResults = sectionMgr->sectionParams->onlineParams.currentRaceNumber > 2 ? 1 : 0;
-            } else if (friendSection < 8) {
-                displayResults = sectionMgr->sectionParams->redWins >= 2 ||
-                                         sectionMgr->sectionParams->blueWins >= 2
-                                     ? 1
-                                     : 0;
-            }
-        }
-    }
-
-    // FriendRoomRegional may expose the converted race as public VS sections;
-    // the transport flag still identifies it as the CPU-enabled friend room.
-    reinterpret_cast<u8*>(page)[0x15f7] = static_cast<u8>(displayResults);
-    return page;
-}
-
-// 0x8064610c is the stb r5,0x15f7(r3) in WiFiVSResults::OnActivate.
-kmCall(0x8064610c, SetFriendRoomResultsDisplayFlag);
-
-// WiFiVSResults::FillPlayerResults does not consume Raceinfo's position array.
-// It iterates the player IDs and reads menusScenario.gpRank for each row, so
-// apply the host order again at that final read boundary.
-static void FillFriendRoomResults(void* page) {
-    RefreshReceivedFriendRoomCPUState();
-    ApplyReceivedFriendRoomCPUFinishState();
-    ApplyReceivedFriendRoomFinishOrder();
-    SyncFriendRoomCPUScenarioNames(Racedata::sInstance);
-    SyncFriendRoomCPUSectionNames(true);
-    if (!s.loggedResults) {
-        LogFriendRoomFinishSnapshot(IsFriendRoomHost() ? "host-results" : "nonhost-results", Raceinfo::sInstance);
-        s.loggedResults = true;
-    }
-    reinterpret_cast<void (*)(void*)>(kmRuntimeAddr(0x806465e0))(page);
-}
-
-kmCall(0x80646130, FillFriendRoomResults);
 
 static void RefreshReceivedFriendRoomCPUState() {
     if (!IsFriendRoom() || IsFriendRoomHost()) return;
@@ -1649,7 +1225,6 @@ void UpdateFriendRoomCPUs(AI::Manager* manager) {
     const bool useHostCPUData = !isHost;
     if (useHostCPUData) {
         RefreshReceivedFriendRoomCPUState();
-        ApplyReceivedFriendRoomCPUFinishState();
     }
     if (isHost) {
         Kart::Manager* kartManager = Kart::Manager::sInstance;
@@ -1662,18 +1237,12 @@ void UpdateFriendRoomCPUs(AI::Manager* manager) {
         }
     }
     if (manager) manager->Update();
-    if (useHostCPUData) {
-        ApplyReceivedFriendRoomCPUFinishState();
-        ForceFriendRoomRoyaleRemoteEndTransition(Raceinfo::sInstance);
-    }
     // Remote kart movement/input is now consumed by the stock
     // RacedataHandler from the hooks above.  Only the separate item
     // inventory snapshot still needs a small friend-room update here.
     if (useHostCPUData) {
         ApplyReceivedCPUItems();
-        ApplyReceivedFriendRoomFinishOrder();
     }
-    UpdateFriendRoomFinishGateFrom("cpu-update");
     // Networking can rebuild the scenario/Mii records while the race is
     // active. Keep the old refresh point, but SetFriendRoomCPUName is now
     // idempotent and avoids the CRC/write work when the name is unchanged.

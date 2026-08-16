@@ -86,13 +86,25 @@ struct FriendRoomCPUSyncPacket {
     u8 magic;
     u8 cpuCount;
     u8 raceDataPlayerId;
-    u8 reserved;  // bit 0: host has armed the shared results transition
+    u8 rh2PlayerId;
     u32 raceDataSequence;
     RKNet::RACEDATAPacket raceData;
+    RKNet::RACEHEADER2Packet rh2Data;
     u8 playerIds[FriendRoomCPUCountMax];
     FriendRoomCPUItem items[FriendRoomCPUCountMax];
-    u16 cpuFinishMask;  // player-id bits with stock FINISHED/DISCONNECTED state
-    u8 finishOrder[12];
+
+    // RaceModeOnlineVs starts its native 30-second counter only after its
+    // local finished-player count becomes non-zero.  The host owns CPU
+    // finishes, so carry the native counter value to remote consoles too.
+    u16 nativeTimeoutFrames;
+    u8 nativeTimeoutActive;
+
+    // RaceModeOnlineVs::tryEndRace can finish remote slots on the host, but
+    // stock RH2 only carries the host's local finish records. Mirror the
+    // host's terminal flags so every remote RaceManager reaches the same end
+    // state even when the final RH2 record is not received.
+    u16 hostFinishedMask;
+    u16 hostDisconnectedMask;
 };
 
 static const u32 PulRH1SizeFriendRoomCPU = PulRH1SizeFull + sizeof(FriendRoomCPUSyncPacket);

@@ -6,8 +6,6 @@
 #include <MarioKartWii/AI/AIManager.hpp>
 #include <Network/PacketExpansion.hpp>
 
-class Raceinfo;
-
 namespace Pulsar {
 namespace Network {
 
@@ -15,9 +13,6 @@ void PrepareFriendRoomCPUs(Racedata* racedata);
 void FinalizeFriendRoomCPUs();
 void ActivateFriendRoomCPUTransport(bool isHost);
 bool IsFriendRoomCPUTransportActive();
-void UpdateFriendRoomFinishGate();
-void CompleteFriendRoomCPURace(Raceinfo* raceinfo);
-void LogFriendRoomRaceFinishEvent(Raceinfo* raceinfo, u8 playerId, const char* phase);
 bool IsFriendRoomCPU(u8 playerId);
 Mii* GetFriendRoomCPUDisplayMii(u8 playerId);
 
