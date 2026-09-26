@@ -1,4 +1,5 @@
 #include <Gamemodes/LapKO/LapKOMgr.hpp>
+#include <Gamemodes/CauseAndEffect/CauseAndEffect.hpp>
 #include <MarioKartWii/Item/ItemSlot.hpp>
 #include <MarioKartWii/Item/ItemManager.hpp>
 #include <Gamemodes/ItemRain/ItemRain.hpp>
@@ -7,6 +8,7 @@ namespace Pulsar {
 namespace LapKO {
 
 static void FrameUpdate() {
+    CauseAndEffect::Update();
     System *system = System::sInstance;
     if (!system->IsContext(PULSAR_MODE_LAPKO)) return;
     const RKNet::Controller *controller = RKNet::Controller::sInstance;

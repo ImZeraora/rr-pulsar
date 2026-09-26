@@ -296,6 +296,7 @@ void System::UpdateContext() {
     bool isItemModeBlast = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_BLAST && isNotPublic;
     bool isItemModeNone = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_NONE;
     bool isItemModeRain = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_ITEMRAIN;
+    bool isCauseAndEffect = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_CAUSEANDEFFECT && isNotPublic;
     bool isItemModeStorm = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_ITEMSTORM;
     bool isTrackSelectionRegs = settings.GetSettingValue(Pulsar::Settings::SETTING_TRACKSELECTION) == TRACKSELECTION_REGS;
     bool isTrackSelectionRetros = settings.GetSettingValue(Pulsar::Settings::SETTING_TRACKSELECTION) == TRACKSELECTION_RETROS && mode != MODE_PUBLIC_VS;
@@ -350,6 +351,7 @@ void System::UpdateContext() {
                 isItemModeBlast = newContext2 & (1 << PULSAR_ITEMMODEBLAST);
                 isItemModeRain = newContext2 & (1 << PULSAR_ITEMMODERAIN);
                 isItemModeStorm = newContext2 & (1 << PULSAR_ITEMMODESTORM);
+                isCauseAndEffect = newContext2 & (1 << PULSAR_MODE_CAUSEANDEFFECT);
                 isTrackSelectionRegs = newContext & (1 << PULSAR_REGS);
                 isTrackSelectionRetros = newContext & (1 << PULSAR_RETROS);
                 isTrackSelectionCts = newContext & (1 << PULSAR_CTS);
@@ -416,6 +418,9 @@ void System::UpdateContext() {
                                          isItemBoxRespawnFast);
     }
 
+    isCauseAndEffect = isCauseAndEffect && isNotPublic && !isBattle && !isTimeTrial && !isOTT && !isVanillaMode &&
+                       (mode == MODE_GRAND_PRIX || mode == MODE_VS_RACE || mode == MODE_PRIVATE_VS);
+
     this->netMgr.hostContext = newContext;
     this->netMgr.hostContext2 = newContext2;
 
@@ -460,7 +465,8 @@ void System::UpdateContext() {
                             (isKoPerRace4) << PULSAR_KOPERRACE_4 |
                             (isKoRoyaleLaps1_5x) << PULSAR_KOROYALE_LAPS_1_5X |
                             (isKoRoyaleLaps2_0x) << PULSAR_KOROYALE_LAPS_2_0X |
-                            (isVanillaMode) << PULSAR_VANILLAMODE;
+                            (isVanillaMode) << PULSAR_VANILLAMODE |
+                            (isCauseAndEffect) << PULSAR_MODE_CAUSEANDEFFECT;
     }
 
     // Combine the new context with preserved bits

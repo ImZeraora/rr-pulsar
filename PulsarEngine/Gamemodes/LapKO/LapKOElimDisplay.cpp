@@ -1,4 +1,5 @@
 #include <Gamemodes/Battle/BattleElimination.hpp>
+#include <Gamemodes/CauseAndEffect/CauseAndEffect.hpp>
 #include <CustomCharacters/CustomCharacters.hpp>
 #include <Gamemodes/LapKO/LapKOMgr.hpp>
 #include <MarioKartWii/UI/Ctrl/CtrlRace/CtrlRaceBase.hpp>
@@ -19,6 +20,12 @@ namespace Pulsar {
 namespace LapKO {
 
 static const u16 kEliminationDisplayDuration = 180;
+static const wchar_t *kCauseNames[CauseAndEffect::CAUSE_COUNT] = {
+    L"Hitting an Item Box, ", L"Performing a Wheelie, ", L"Performing a Drift, ", L"Hitting a Player with an Item, ", L"Getting Hit by an Item/Object, ",
+    L"Getting a Boost, ", L"Bumping into a Player, ", L"Performing a Trick, ", L"Changing Position, ", L"Using an Item, ", L"Entering a Cannon, "};
+static const wchar_t *kEffectNames[CauseAndEffect::EFFECT_COUNT] = {
+    L"Gives a Random Item.", L"Increases Stats by 5%.", L"Decreases Stats by 5%.", L"Shrinks You.", L"Activates a Mega Mushroom.", L"Inks your Screen.", L"Places a Bomb Above You.",
+    L"Activates a Mushroom Boost.", L"Removes your Items.", L"Turns you Around.", L"Activates a Star.", L"Gives you Low Gravity.", L"Gives you High Gravity."};
 
 extern "C" void fun_playSound(void *);
 extern "C" void ptr_menuPageOrSomething(void *);
@@ -74,6 +81,7 @@ public:
 
 private:
     void UpdateMessage(const u8 *playerIds, u8 count);
+    void UpdateCauseAndEffectMessage();
     void Show(bool visible);
     const wchar_t *GetPlayerDisplayName(u8 playerId, wchar_t *scratch, size_t length) const;
 
@@ -81,6 +89,8 @@ private:
     nw4r::lyt::TextBox *textBox;
     u16 lastDisplayTimer;
     bool soundPlayedThisDisplay;
+    u32 lastCauseAndEffectRound;
+    u8 lastCauseAndEffectPlayer;
 };
 
 static UI::CustomCtrlBuilder sLapKOElimMessageBuilder(
@@ -91,7 +101,7 @@ u32 CtrlRaceLapKOElimMessage::Count() {
     const bool lapKoDisplay = system->lapKoMgr != nullptr &&
                               (system->IsContext(PULSAR_MODE_LAPKO) || system->IsContext(PULSAR_MODE_BATTLEROYALE));
     const bool battleDisplay = ::Pulsar::BattleElim::ShouldApplyBattleElimination();
-    if (!lapKoDisplay && !battleDisplay) return 0;
+    if (!lapKoDisplay && !battleDisplay && !CauseAndEffect::ShouldShowDisplay()) return 0;
     const Racedata *racedata = Racedata::sInstance;
     const RacedataScenario &scenario = racedata->racesScenario;
     return scenario.localPlayerCount == 0 ? 1 : scenario.localPlayerCount;
@@ -116,6 +126,8 @@ void CtrlRaceLapKOElimMessage::Load(u8 hudSlot) {
     this->textBox = static_cast<nw4r::lyt::TextBox *>(this->layout.GetPaneByName("TextBox_00"));
     this->lastDisplayTimer = 0;
     this->soundPlayedThisDisplay = false;
+    this->lastCauseAndEffectRound = 0xFFFFFFFF;
+    this->lastCauseAndEffectPlayer = 0xFF;
     this->Show(false);
 }
 
@@ -126,6 +138,17 @@ void CtrlRaceLapKOElimMessage::OnUpdate() {
     const bool lapKoContext = system->lapKoMgr != nullptr &&
                               (system->IsContext(PULSAR_MODE_LAPKO) || system->IsContext(PULSAR_MODE_BATTLEROYALE));
     const bool battleContext = ::Pulsar::BattleElim::ShouldApplyBattleElimination();
+    if (CauseAndEffect::IsEnabled()) {
+        this->Show(true);
+        const u8 playerId = this->GetPlayerId();
+        const u32 round = CauseAndEffect::GetRound(playerId);
+        if (round != this->lastCauseAndEffectRound || playerId != this->lastCauseAndEffectPlayer) {
+            this->lastCauseAndEffectRound = round;
+            this->lastCauseAndEffectPlayer = playerId;
+            this->UpdateCauseAndEffectMessage();
+        }
+        return;
+    }
 
     u16 timer = 0;
     u8 eliminationCount = 0;
@@ -164,6 +187,19 @@ void CtrlRaceLapKOElimMessage::OnUpdate() {
         const u8 alpha = static_cast<u8>((fadeFraction > 1.0f ? 1.0f : fadeFraction) * 255.0f);
         this->root->alpha = alpha;
     }
+}
+
+void CtrlRaceLapKOElimMessage::UpdateCauseAndEffectMessage() {
+    if (this->textBox == nullptr) return;
+    const u8 playerId = this->GetPlayerId();
+    const CauseAndEffect::Pair pair = CauseAndEffect::GetPair(playerId);
+    if (pair.cause >= CauseAndEffect::CAUSE_COUNT || pair.effect >= CauseAndEffect::EFFECT_COUNT) return;
+
+    wchar_t message[160];
+    ::swprintf(message, sizeof(message) / sizeof(message[0]), L"%ls\n%ls", kCauseNames[pair.cause], kEffectNames[pair.effect]);
+    Text::Info info;
+    info.strings[0] = message;
+    this->SetMessage(UI::BMG_TEXT, &info);
 }
 
 void CtrlRaceLapKOElimMessage::UpdateMessage(const u8 *playerIds, u8 count) {

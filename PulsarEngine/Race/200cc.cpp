@@ -1,4 +1,5 @@
 #include <kamek.hpp>
+#include <Gamemodes/CauseAndEffect/CauseAndEffect.hpp>
 #include <MarioKartWii/Kart/KartManager.hpp>
 #include <MarioKartWii/Effect/EffectMgr.hpp>
 #include <MarioKartWii/UI/Section/SectionMgr.hpp>
@@ -142,6 +143,7 @@ static void FastFallingBody(Kart::Status &status, Kart::Physics &physics) {  // 
             physics.gravity -= input * fastFallingBodyGravity;
         }
     }
+    physics.gravity *= CauseAndEffect::GetGravityFactor(status.link->GetPlayerIdx());
     status.UpdateFromInput();
 }
 kmCall(0x805967a4, FastFallingBody);
@@ -160,6 +162,7 @@ static Kart::WheelPhysicsHolder &FastFallingWheels(Kart::Sub &sub, u8 wheelIdx, 
             gravity *= (input * fastFallingWheelGravity + 1.0f);
         }
     }
+    gravity *= CauseAndEffect::GetGravityFactor(sub.GetPlayerIdx());
     gravityVector.y = gravity;
     return sub.GetWheelPhysicsHolder(wheelIdx);
 };

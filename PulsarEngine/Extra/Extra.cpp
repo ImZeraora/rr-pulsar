@@ -1,6 +1,7 @@
 #include <Gamemodes/ItemRain/ItemRain.hpp>
 #include <hooks.hpp>
 #include <kamek.hpp>
+#include <Gamemodes/CauseAndEffect/CauseAndEffect.hpp>
 #include <MarioKartWii/Kart/KartStatus.hpp>
 #include <MarioKartWii/Kart/KartPointers.hpp>
 #include <MarioKartWii/Item/ItemManager.hpp>
@@ -140,6 +141,7 @@ static void RemoveSpecialItem(Item::Player *player, u16 playerItemBoxType, u16 c
         cpuItemBoxType = 0;
     }
     player->DecideItem(playerItemBoxType, cpuItemBoxType, lotteryType);
+    Pulsar::CauseAndEffect::OnItemBox(player->id);
 }
 kmCall(0x80828d70, RemoveSpecialItem);
 kmCall(0x80828da4, RemoveSpecialItem);

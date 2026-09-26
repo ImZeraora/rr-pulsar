@@ -10,6 +10,15 @@
 namespace Pulsar {
 namespace UI {
 
+static void SetSettingMessage(LayoutUIControl &control, Settings::SettingId id, u32 option, bool description) {
+    if (id == Settings::SETTING_ITEMMODE && option == GAMEMODE_CAUSEANDEFFECT) {
+        control.SetMessage(description ? BMG_CAUSE_EFFECT_TOGGLE_DESCRIPTION : BMG_CAUSE_EFFECT_TOGGLE);
+    } else {
+        control.SetMessage(description ? Settings::Params::GetDescriptionBmg(id, option)
+                                       : Settings::Params::GetOptionBmg(id, option));
+    }
+}
+
 static bool s_votingSettingsPreviewActive = false;
 static u32 s_votingSettingsPreviewFrame = 0;
 static const u32 votingSettingsPreviewDuration = 240;
@@ -261,7 +270,7 @@ void SettingsPanel::OnActivate() {
             scroller.optionsCount = def.optionCount;
             scroller.curSelectedOption = scrollerValues[i];
             scroller.SetMessage(id);
-            value.activeTextValueControl->SetMessage(Settings::Params::GetOptionBmg(id, scrollerValues[i]));
+            SetSettingMessage(*value.activeTextValueControl, id, scrollerValues[i], false);
         }
     }
 
@@ -367,15 +376,14 @@ void SettingsPanel::OnTextChange(TextUpDownValueControl::TextControl &text, u32 
     if (index >= page.scrollerCount) return;
     const Settings::SettingId id = page.scrollerSettings[index];
     scrollerValues[index] = optionId;
-    text.SetMessage(Settings::Params::GetOptionBmg(id, optionId));
-    if (!externControls[0]->IsSelected()) bottomText->SetMessage(Settings::Params::GetDescriptionBmg(id, optionId));
+    SetSettingMessage(text, id, optionId, false);
+    if (!externControls[0]->IsSelected()) SetSettingMessage(*bottomText, id, optionId, true);
 }
 
 void SettingsPanel::OnUpDownSelect(UpDownControl &scroller, u32) {
     const Settings::SettingsPageDef &page = Settings::Params::GetPageDef(settingsPageId);
     if (scroller.id >= page.scrollerCount) return;
-    bottomText->SetMessage(Settings::Params::GetDescriptionBmg(
-        page.scrollerSettings[scroller.id], scroller.curSelectedOption));
+    SetSettingMessage(*bottomText, page.scrollerSettings[scroller.id], scroller.curSelectedOption, true);
 }
 
 void SettingsPanel::BeforeControlUpdate() {

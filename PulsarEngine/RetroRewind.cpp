@@ -1,5 +1,6 @@
 #include <MarioKartWii/Race/RaceData.hpp>
 #include <Race/200ccParams.hpp>
+#include <Gamemodes/CauseAndEffect/CauseAndEffect.hpp>
 #include <SlotExpansion/CupsConfig.hpp>
 #include <Settings/UI/SettingsPanel.hpp>
 #include <Settings/Settings.hpp>

@@ -178,6 +178,8 @@ static void BeforeROOMSend(RKNet::PacketHolder<PulROOM> *packetHolder, PulROOM *
         u8 itemModeRain = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_ITEMRAIN;
         u8 itemModeStorm = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_ITEMSTORM;
         u8 allItemsCanLand = settings.GetSettingValue(Pulsar::Settings::SETTING_ALLITEMSCANLAND) == ALLITEMSCANLAND_ENABLED;
+        const u8 causeAndEffect = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_CAUSEANDEFFECT &&
+                                  !isBattle && ottOnline == OTTSETTING_ONLINE_DISABLED && originalMessage < 4;
         const u8 vanillaMode = settings.GetSettingValue(Pulsar::Settings::SETTING_VANILLAMODE) == VANILLAMODE_ENABLED;
         const u8 extendedTeams = settings.GetSettingValue(Pulsar::Settings::SETTING_EXTENDEDTEAMSENABLED) == EXTENDEDTEAMS_ENABLED;
         u8 normalTC = settings.GetSettingValue(Pulsar::Settings::SETTING_THUNDERCLOUD) == THUNDERCLOUD_NORMAL && isNotPublic;
@@ -250,7 +252,8 @@ static void BeforeROOMSend(RKNet::PacketHolder<PulROOM> *packetHolder, PulROOM *
                                           koPerRace4 << PULSAR_KOPERRACE_4 |
                                           koRoyaleLaps1_5x << PULSAR_KOROYALE_LAPS_1_5X |
                                           koRoyaleLaps2_0x << PULSAR_KOROYALE_LAPS_2_0X |
-                                          vanillaMode << PULSAR_VANILLAMODE;
+                                          vanillaMode << PULSAR_VANILLAMODE |
+                                          (causeAndEffect && !vanillaMode) << PULSAR_MODE_CAUSEANDEFFECT;
 
         if (!vanillaMode) {
             destPacket->customItemsBitfield = settings.GetCustomItems();
