@@ -2,6 +2,7 @@
 #include <MarioKartWii/UI/Layout/Layout.hpp>
 #include <MarioKartWii/Archive/ArchiveMgr.hpp>
 #include <UI/UI.hpp>
+#include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
 #include <PulsarSystem.hpp>
 
 // Expanded Pages:
@@ -383,6 +384,7 @@ static int GetMsgIdxByBmgId(const BMGHolder &bmg, s32 bmgId) {
 }
 
 static const BMGHolder *matchedCustomBmg = nullptr;
+static const wchar_t *scoreBasedMessage = nullptr;
 
 static const BMGHolder *GetCountryBmg() {
     static BMGHolder countryBmg;
@@ -427,6 +429,12 @@ static const BMGHolder *GetCharaNameBmg() {
 }
 
 static int GetMsgIdxById(const BMGHolder &normalHolder, s32 bmgId) {
+    scoreBasedMessage = ScoreBased::GetSettingText(bmgId);
+    if (scoreBasedMessage != nullptr) {
+        isCustom = BMG_NORMAL;
+        matchedCustomBmg = nullptr;
+        return 0;
+    }
     int ret = GetMsgIdxByBmgId(System::sInstance->GetBMG(), bmgId);
     if (ret >= 0) {
         isCustom = CUSTOM_BMG;
@@ -479,6 +487,7 @@ wchar_t *GetMsgByMsgIdx(const BMGHolder &bmg, s32 msgIdx) {
 }
 
 wchar_t *GetMsg(const BMGHolder &normalHolder, s32 msgIdx) {
+    if (scoreBasedMessage != nullptr) return const_cast<wchar_t *>(scoreBasedMessage);
     wchar_t *ret = nullptr;
     if (isCustom == CUSTOM_BMG && matchedCustomBmg != nullptr) {
         ret = GetMsgByMsgIdx(*matchedCustomBmg, msgIdx);
@@ -495,6 +504,8 @@ const u8 *GetFontIndex(const BMGHolder &bmg, s32 msgIdx) {
 };
 
 const u8 *GetFont(const BMGHolder &normalHolder, s32 msgIdx) {
+    static const u8 defaultFont = 0;
+    if (scoreBasedMessage != nullptr) return &defaultFont;
     const u8 *ret = nullptr;
     if (isCustom == CUSTOM_BMG && matchedCustomBmg != nullptr) {
         ret = GetFontIndex(*matchedCustomBmg, msgIdx);
@@ -507,6 +518,7 @@ kmBranch(0x805f8d2c, GetFont);
 const wchar_t *GetCustomMsg(s32 bmgId) {
     const BMGHolder &bmg = System::sInstance->GetBMG();
     int msgIdx = GetMsgIdxById(bmg, bmgId);
+    if (scoreBasedMessage != nullptr) return scoreBasedMessage;
     if (isCustom == CUSTOM_BMG && matchedCustomBmg != nullptr) {
         return GetMsgByMsgIdx(*matchedCustomBmg, msgIdx);
     }

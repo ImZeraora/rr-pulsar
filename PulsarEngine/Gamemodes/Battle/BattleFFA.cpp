@@ -10,6 +10,7 @@
 #include <MarioKartWii/UI/Page/Page.hpp>
 #include <Network/Network.hpp>
 #include <runtimeWrite.hpp>
+#include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
 
 namespace Pulsar {
 namespace Battle {
@@ -19,6 +20,7 @@ static void SetFFAmodeHelper(Racedata *racedata) {
         racedata->racesScenario.settings.modeFlags = 0;
     } else {
         racedata->racesScenario.settings.modeFlags = racedata->menusScenario.settings.modeFlags;
+        if (ScoreBased::IsActive()) racedata->racesScenario.settings.modeFlags |= 0x2;
     }
 }
 

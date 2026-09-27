@@ -65,7 +65,8 @@ const SettingDef Params::settingDefs[SETTING_COUNT] = {
     {SETTING_EXTENDEDTEAMSLINE, 2},
     {SETTING_EXTENDEDTEAMSPLAYERS, 4},
     {SETTING_LOOSEARCHIVEOVERRIDES, 2},
-    {SETTING_LANGUAGE, 13}};
+    {SETTING_LANGUAGE, 13},
+    {SETTING_BATTLESCOREBASED, 2}};
 
 static const SettingId race1RadioSettings[] = {
     SETTING_BRAKEDRIFT,
@@ -114,7 +115,8 @@ static const SettingId onlineRadios[] = {
 
 static const SettingId battleRadios[] = {
     SETTING_BATTLETEAMS,
-    SETTING_BATTLEELIMINATION};
+    SETTING_BATTLEELIMINATION,
+    SETTING_BATTLESCOREBASED};
 
 static const SettingId froom1Radios[] = {
     SETTING_FROOMCC,

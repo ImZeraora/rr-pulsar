@@ -271,19 +271,23 @@ int GetOnlineVSPausePageId() {
     return PAGE_VS_RACE_PAUSE_MENU;
 }
 
-int GetOnlineBTPausePageId() {
+int GetBattlePausePageId() {
     const Raceinfo *raceInfo = Raceinfo::sInstance;
     if (raceInfo && !raceInfo->IsAtLeastStage(RACESTAGE_RACE)) {
         return -1;
     }
+    // These HUD getters are shared by offline and online Battle sections.
+    // PauseMenu.cpp creates the enhanced TT pause page for single-player Battle.
+    const Section *section = SectionMgr::sInstance->curSection;
+    if (section->sectionId == SECTION_P1BATTLE) return PAGE_TT_PAUSE_MENU;
     return PAGE_BATTLE_PAUSE_MENU;
 }
 
 kmBranch(0x806335b8, GetOnlineVSPausePageId);
 kmBranch(0x806337f8, GetOnlineVSPausePageId);
 kmBranch(0x80633768, GetOnlineVSPausePageId);
-kmBranch(0x80633948, GetOnlineBTPausePageId);
-kmBranch(0x80633888, GetOnlineBTPausePageId);
+kmBranch(0x80633948, GetBattlePausePageId);
+kmBranch(0x80633888, GetBattlePausePageId);
 kmBranch(0x806336d8, GetOnlineVSPausePageId);
 kmBranch(0x80633648, GetOnlineVSPausePageId);
 

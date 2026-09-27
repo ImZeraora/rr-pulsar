@@ -11,6 +11,7 @@
 #include <MarioKartWii/RKNet/RH2.hpp>
 #include <MarioKartWii/RKNet/USER.hpp>
 #include <Network/Network.hpp>
+#include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
 
 namespace Pulsar {
 namespace Network {
@@ -60,14 +61,18 @@ struct PulRH1 : public RKNet::RACEHEADER1Packet {
     u16 battleRoyaleFinishMinutes[2];
     u8 battleRoyaleFinishSeconds[2];
     u16 battleRoyaleFinishMilliseconds[2];
+
+    ScoreBased::SyncState scoreBased;
 };
 
 // Size constants for conditional packet expansion
 static const u32 PulRH1BattleRoyaleSize = 14;
 static const u32 PulRH1LapKoSize = 16;
-static const u32 PulRH1SizeBase = sizeof(PulRH1) - PulRH1LapKoSize - PulRH1BattleRoyaleSize;
+static const u32 PulRH1SizeBase = sizeof(PulRH1) - PulRH1LapKoSize - PulRH1BattleRoyaleSize - sizeof(ScoreBased::SyncState);
 static const u32 PulRH1SizeLapKo = PulRH1SizeBase + PulRH1LapKoSize;
+static const u32 PulRH1SizeBattleRoyale = PulRH1SizeLapKo + PulRH1BattleRoyaleSize;
 static const u32 PulRH1SizeFull = sizeof(PulRH1);
+static_assert(PulRH1SizeFull <= 255, "RH1 size is stored in one byte");
 
 struct PulRH2 : public RKNet::RACEHEADER2Packet {};
 struct PulROOM : public RKNet::ROOMPacket {

@@ -185,7 +185,8 @@ static void BeforeROOMSend(RKNet::PacketHolder<PulROOM> *packetHolder, PulROOM *
         u8 itemModeStorm = settings.GetSettingValue(Pulsar::Settings::SETTING_ITEMMODE) == GAMEMODE_ITEMSTORM;
         u8 allItemsCanLand = settings.GetSettingValue(Pulsar::Settings::SETTING_ALLITEMSCANLAND) == ALLITEMSCANLAND_ENABLED;
         const u8 vanillaMode = settings.GetSettingValue(Pulsar::Settings::SETTING_VANILLAMODE) == VANILLAMODE_ENABLED;
-        const u8 extendedTeams = settings.GetSettingValue(Pulsar::Settings::SETTING_EXTENDEDTEAMSENABLED) == EXTENDEDTEAMS_ENABLED;
+        const u8 scoreBased = isBattle && settings.GetSettingValue(Settings::SETTING_BATTLESCOREBASED) != 0;
+        const u8 extendedTeams = !scoreBased && settings.GetSettingValue(Pulsar::Settings::SETTING_EXTENDEDTEAMSENABLED) == EXTENDEDTEAMS_ENABLED;
         u8 normalTC = settings.GetSettingValue(Pulsar::Settings::SETTING_THUNDERCLOUD) == THUNDERCLOUD_NORMAL && isNotPublic;
         u8 vr = settings.GetSettingValue(Pulsar::Settings::SETTING_VR) == VR_ENABLED && isNotPublic;
         const u8 isStartRetro = (originalMessage == 4);
@@ -212,6 +213,11 @@ static void BeforeROOMSend(RKNet::PacketHolder<PulROOM> *packetHolder, PulROOM *
             } else {
                 battleTeam = BATTLE_FFA_DISABLED;
             }
+        }
+
+        if (scoreBased) {
+            battleTeam = !isBalloonBattle;
+            battleElim = 0;
         }
 
         if (vanillaMode) {
@@ -243,7 +249,7 @@ static void BeforeROOMSend(RKNet::PacketHolder<PulROOM> *packetHolder, PulROOM *
                                          isStart200 << PULSAR_START200 | isStartOTT << PULSAR_STARTOTT |
                                          isStartItemRain << PULSAR_STARTITEMRAIN;
 
-        destPacket->hostSystemContext2 |= transmissionInside << PULSAR_TRANSMISSIONINSIDE | transmissionOutside << PULSAR_TRANSMISSIONOUTSIDE |
+        destPacket->hostSystemContext2 |= scoreBased << PULSAR_BATTLE_SCOREBASED | transmissionInside << PULSAR_TRANSMISSIONINSIDE | transmissionOutside << PULSAR_TRANSMISSIONOUTSIDE |
                                           transmissionVanilla << PULSAR_TRANSMISSIONVANILLA | miiHeads << PULSAR_MIIHEADS |
                                           itemModeRandom << PULSAR_ITEMMODERANDOM | itemModeBlast << PULSAR_ITEMMODEBLAST |
                                           itemModeRain << PULSAR_ITEMMODERAIN | itemModeStorm << PULSAR_ITEMMODESTORM |

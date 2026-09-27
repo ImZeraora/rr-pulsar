@@ -8,8 +8,8 @@ namespace Race {
 kmWrite32(0x8062c658, 0x38800019);
 kmWrite32(0x8062c79c, 0x38800019);
 kmWrite32(0x80633a98, 0x38600019);
+// Single-player Battle uses the enhanced TT menu; OnlinePause.cpp selects this page.
 kmWrite32(0x8062c8e0, 0x38800019);
-kmWrite32(0x80633970, 0x38600019);
 kmWrite32(0x8083d618, 0x60000000);
 
 extern "C" void sInstance__8Racedata(void *);

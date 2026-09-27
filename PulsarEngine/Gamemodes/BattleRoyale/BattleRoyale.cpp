@@ -996,7 +996,7 @@ static void ConsumeRemoteBalloonLosses(RKNet::Controller &controller, const RKNe
         if (split == nullptr) continue;
 
         const RKNet::PacketHolder<Network::PulRH1> *holder = split->GetPacketHolder<Network::PulRH1>();
-        if (holder == nullptr || holder->packetSize < Network::PulRH1SizeFull) continue;
+        if (holder == nullptr || holder->packetSize < Network::PulRH1SizeBattleRoyale) continue;
 
         const Network::PulRH1 *packet = holder->packet;
         ApplyRemoteFinishTimes(controller, aid, *packet);

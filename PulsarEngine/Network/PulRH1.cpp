@@ -27,8 +27,10 @@ void BeforeRH1Send(RKNet::PacketHolder<PulRH1> &packetHolder, PulRH1 *packet, u3
     const bool inFriendRoom = IsFriendRoom();
     const bool battleRoyaleEnabled = inFriendRoom && system->IsContext(PULSAR_MODE_BATTLEROYALE);
     const bool eliminationSyncEnabled = inFriendRoom && (system->IsContext(PULSAR_MODE_LAPKO) || battleRoyaleEnabled);
-    const u32 targetSize = battleRoyaleEnabled ? PulRH1SizeFull : (eliminationSyncEnabled ? PulRH1SizeLapKo : PulRH1SizeBase);
-    if (eliminationSyncEnabled || battleRoyaleEnabled) packetHolder.packetSize = targetSize;
+    const bool scoreBasedEnabled = inFriendRoom && ScoreBased::IsActive();
+    const u32 targetSize = scoreBasedEnabled ? PulRH1SizeFull :
+        (battleRoyaleEnabled ? PulRH1SizeBattleRoyale : (eliminationSyncEnabled ? PulRH1SizeLapKo : PulRH1SizeBase));
+    if (eliminationSyncEnabled || battleRoyaleEnabled || scoreBasedEnabled) packetHolder.packetSize = targetSize;
 
     if (system->IsContext(PULSAR_CT)) {
         packetHolder.packetSize = targetSize;
@@ -49,6 +51,8 @@ void BeforeRH1Send(RKNet::PacketHolder<PulRH1> &packetHolder, PulRH1 *packet, u3
         packetHolder.packet->lapKoElimCount = 0;
         memset(packetHolder.packet->lapKoElims, 0xFF, sizeof(packetHolder.packet->lapKoElims));
     }
+
+    if (scoreBasedEnabled) ScoreBased::WriteRH1Packet(*packetHolder.packet);
 
     if (battleRoyaleEnabled) {
         BattleRoyale::WriteRH1Packet(*packetHolder.packet);

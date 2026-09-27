@@ -315,6 +315,7 @@ void System::UpdateContext() {
     bool isAllItemsCanLand = settings.GetSettingValue(Pulsar::Settings::SETTING_ALLITEMSCANLAND) == ALLITEMSCANLAND_ENABLED;
     bool isVanillaMode = settings.GetSettingValue(Pulsar::Settings::SETTING_VANILLAMODE) == VANILLAMODE_ENABLED && isFroom;
     bool isTeamBattle = settings.GetSettingValue(Pulsar::Settings::SETTING_BATTLETEAMS) == BATTLE_FFA_DISABLED && isBattle;
+    bool isScoreBased = isBattle && isNotPublic && settings.GetSettingValue(Settings::SETTING_BATTLESCOREBASED) != 0;
     bool isElimination = settings.GetSettingValue(Pulsar::Settings::SETTING_BATTLEELIMINATION) && isBalloonBattle;
     bool isVR = settings.GetSettingValue(Pulsar::Settings::SETTING_VR) == VR_ENABLED && isNotPublic;
     bool isBattleRoyale = settings.GetSettingValue(Pulsar::Settings::SETTING_KOROYALEENABLED) == KOROYALESETTING_ENABLED && isNotPublic && !isBattle && !isTimeTrial;
@@ -376,6 +377,7 @@ void System::UpdateContext() {
                 isTeamBattle = newContext & (1 << PULSAR_FFA);
                 isExtendedTeams = newContext & (1 << PULSAR_EXTENDEDTEAMS);
                 isElimination = newContext & (1 << PULSAR_ELIMINATION);
+                isScoreBased = isBattle && (newContext2 & (1 << PULSAR_BATTLE_SCOREBASED));
                 isLapBasedKO = newContext & (1 << PULSAR_MODE_LAPKO);
                 isStartRetro = newContext & (1 << PULSAR_STARTRETROS);
                 isStartCT = newContext & (1 << PULSAR_STARTCTS);
@@ -423,6 +425,13 @@ void System::UpdateContext() {
                                          isItemBoxRespawnFast);
     }
 
+    if (isScoreBased) {
+        // PULSAR_FFA means FFA despite the historical isTeamBattle variable name.
+        isTeamBattle = !isBalloonBattle;
+        isElimination = false;
+        isExtendedTeams = false;
+    }
+
     this->netMgr.hostContext = newContext;
     this->netMgr.hostContext2 = newContext2;
 
@@ -467,7 +476,8 @@ void System::UpdateContext() {
                             (isKoPerRace4) << PULSAR_KOPERRACE_4 |
                             (isKoRoyaleLaps1_5x) << PULSAR_KOROYALE_LAPS_1_5X |
                             (isKoRoyaleLaps2_0x) << PULSAR_KOROYALE_LAPS_2_0X |
-                            (isVanillaMode) << PULSAR_VANILLAMODE;
+                            (isVanillaMode) << PULSAR_VANILLAMODE |
+                            (isScoreBased) << PULSAR_BATTLE_SCOREBASED;
     }
 
     // Combine the new context with preserved bits
