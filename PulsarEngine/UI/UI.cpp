@@ -3,6 +3,7 @@
 #include <MarioKartWii/Archive/ArchiveMgr.hpp>
 #include <UI/UI.hpp>
 #include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
+#include <Gamemodes/Battle/ScoreBased/ScoreBasedResults.hpp>
 #include <PulsarSystem.hpp>
 
 // Expanded Pages:
@@ -219,6 +220,11 @@ void ExpSection::CreateAndInitPage(ExpSection &self, u32 id) {
                 page = new AutoVote;
             else
                 page = new Pages::SELECTStageMgr;
+            break;
+        case PAGE_BATTLE_LEADERBOARDS_UPDATE:
+        case PAGE_BATTLE_TOTAL_LEADERBOARDS:
+            page = ScoreBased::CreateBossResultsPage(initId);
+            if (!page) page = self.CreatePageById(initId);
             break;
         case PAGE_GPVS_LEADERBOARD_UPDATE:
             page = new ExpGPVSLeaderboardUpdate;

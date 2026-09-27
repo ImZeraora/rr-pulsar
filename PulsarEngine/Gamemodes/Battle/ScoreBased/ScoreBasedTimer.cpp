@@ -42,19 +42,19 @@ static void InitCoinTimer(CtrlRaceTime *control) {
 kmWritePointer(0x808d4028, InitCoinTimer);
 
 static void UpdateCoinTimer(CtrlRaceTime *control) {
-    if (!IsSingleCoinBattle()) {
+    if (!IsSingleCoinBattle() && !IsBossBattle()) {
         reinterpret_cast<void (*)(CtrlRaceTime *)>(kmRuntimeAddr(0x807f7ec0))(control);
         return;
     }
     control->UpdatePausePosition();
     if (SectionMgr::sInstance->curSection->isPaused) return;
-    const u32 remaining = GetCoinTimerMilliseconds();
+    const u32 remaining = IsBossBattle() ? GetBossElapsedMilliseconds() : GetCoinTimerMilliseconds();
     control->timer.minutes = remaining / 60000;
     control->timer.seconds = remaining / 1000 % 60;
     control->timer.milliseconds = remaining % 1000;
     control->timer.isActive = true;
     // Bypass the native battle one-minute warning, which otherwise replaces
-    // a 20-second personal countdown with a frozen 1:00 for 180 frames.
+    // a short countdown (or Boss elapsed clock) with a frozen 1:00 for 180 frames.
     control->SetTimer(&control->timer);
 }
 kmWritePointer(0x808d402c, UpdateCoinTimer);

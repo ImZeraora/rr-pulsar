@@ -1,5 +1,7 @@
+#include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
 #include <Gamemodes/ItemRain/ItemRain.hpp>
 #include <hooks.hpp>
+#include <runtimeWrite.hpp>
 #include <kamek.hpp>
 #include <MarioKartWii/Kart/KartStatus.hpp>
 #include <MarioKartWii/Kart/KartPointers.hpp>
@@ -129,8 +131,20 @@ static void OnBlueShellExplosion(Item::ObjKouraTogezo *blueShell, u32 soundId) {
 kmCall(0x807AE2E4, OnBlueShellExplosion);
 kmWrite32(0x807BB9C8, 0x38000384);  // li r0, 900 (15 seconds)
 
+// Native dropped-Mushroom activation: movement/effects and pickup bookkeeping,
+// without UseMushroom's inventory decrement or item-use event context.
+kmRuntimeUse(0x8079864c);
+
 // Remove special itembox table properties [ZPL]
 static void RemoveSpecialItem(Item::Player *player, u16 playerItemBoxType, u16 cpuItemBoxType, u32 lotteryType) {
+    if (Pulsar::ScoreBased::IsBoss(player->id)) {
+        // Only the owning console activates movement; remote karts receive
+        // native race state. A held timed grant and its roulette stay intact.
+        if (!player->isRemote && !Pulsar::ScoreBased::IsEliminated(player->id) &&
+            !Pulsar::ScoreBased::HasFinished())
+            reinterpret_cast<void (*)(Item::Player *)>(kmRuntimeAddr(0x8079864c))(player);
+        return;
+    }
     const Pulsar::CupsConfig *cupsConfig = Pulsar::CupsConfig::sInstance;
     const Pulsar::PulsarId pulsarId = cupsConfig->GetWinning();
     const char *fileName = !Pulsar::CupsConfig::IsReg(pulsarId) ? cupsConfig->GetFileName(pulsarId, cupsConfig->GetCurVariantIdx()) : 0;

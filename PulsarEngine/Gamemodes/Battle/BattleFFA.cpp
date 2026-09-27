@@ -21,9 +21,13 @@ static void SetFFAmodeHelper(Racedata *racedata) {
     } else {
         racedata->racesScenario.settings.modeFlags = racedata->menusScenario.settings.modeFlags;
         if (ScoreBased::IsActive()) racedata->racesScenario.settings.modeFlags |= 0x2;
+        ScoreBased::ConfigureBossTeams();
     }
 }
 
+// PAL 8053056c is inside the scenario copy, not a native call boundary.
+// The continuation needs r0 (loop count), r3/r6 (settings), and r4/r5
+// (copy source/destination). Preserve all five across the C++ helper.
 static asmFunc SetFFAmode() {
     ASM(
         nofralloc;
@@ -33,10 +37,14 @@ static asmFunc SetFFAmode() {
         stw r0, 0x24(r1);
         stw r3, 0x8(r1);
         stw r6, 0xC(r1);
+        stw r4, 0x14(r1);
+        stw r5, 0x18(r1);
 
         mr r3, r31;
         bl SetFFAmodeHelper;
 
+        lwz r5, 0x18(r1);
+        lwz r4, 0x14(r1);
         lwz r6, 0xC(r1);
         lwz r3, 0x8(r1);
         lwz r0, 0x24(r1);

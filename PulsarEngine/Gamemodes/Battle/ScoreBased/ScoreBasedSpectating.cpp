@@ -6,7 +6,7 @@ namespace Pulsar {
 namespace ScoreBased {
 
 void UpdateSpectatorCameras() {
-    if (!IsCoinBattle() || HasFinished()) return;
+    if ((!IsCoinBattle() && !IsBossBattle()) || HasFinished()) return;
     RaceCameraMgr *cameras = RaceCameraMgr::sInstance;
     const Raceinfo *race = Raceinfo::sInstance;
     if (!cameras || !cameras->cameras || !race || !race->playerIdInEachPosition) return;

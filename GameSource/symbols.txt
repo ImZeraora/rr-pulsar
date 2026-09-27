@@ -2629,3 +2629,26 @@ Update__Q24Kart6KillerFv = 0x8059bc44
 
 AssignTeams__Q25Pages11VSTeamsViewFv = 0x8084ffc8
 IsMultiplayer__Q25Pages4MenuFv = 0x808388b4
+
+# Boss battle results: verified native page flow and match markers
+__ct__Q25Pages23BattleLeaderboardUpdateFv = 0x806254e8
+__dt__Q25Pages23BattleLeaderboardUpdateFv = 0x8085ef48
+GetNextPage__Q25Pages23BattleLeaderboardUpdateCFv = 0x8085ede4
+GetRuntimeTypeInfo__Q25Pages23BattleLeaderboardUpdateCFv = 0x8085efd4
+FillRows__Q25Pages23BattleLeaderboardUpdateFv = 0x8085ea64
+__ct__Q25Pages22BattleLeaderboardTotalFv = 0x80625550
+__dt__Q25Pages22BattleLeaderboardTotalFv = 0x8085eeb0
+GetNextPage__Q25Pages22BattleLeaderboardTotalCFv = 0x8085ee14
+GetRuntimeTypeInfo__Q25Pages22BattleLeaderboardTotalCFv = 0x8085ef3c
+FillRows__Q25Pages22BattleLeaderboardTotalFv = 0x8085ea54
+hasTeamScoreDiffBeenCalcd__Q25Pages19TeamLeaderboardBase = 0x809c4714
+teamScoreDiff__Q25Pages19TeamLeaderboardBase = 0x809c4718
+__ct__13CtrlRaceCountFv = 0x80858828
+__dt__13CtrlRaceCountFv = 0x807ee40c
+Load__13CtrlRaceCountFPCcPCc = 0x807ee25c
+__dt__22CtrlRaceBattleSetPointFv = 0x807ee1d8
+InitSelf__22CtrlRaceBattleSetPointFv = 0x807edeb8
+GetRuntimeTypeInfo__22CtrlRaceBattleSetPointCFv = 0x807ee230
+GetClassName__22CtrlRaceBattleSetPointCFv = 0x807edd98
+Load__22CtrlRaceBattleSetPointFUiUi = 0x807edda4
+__vt__22CtrlRaceBattleSetPoint = 0x808d3bd8

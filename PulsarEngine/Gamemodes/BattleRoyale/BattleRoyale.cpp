@@ -1,3 +1,4 @@
+#include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
 #include <PulsarSystem.hpp>
 #include <Gamemodes/BattleRoyale/BattleRoyale.hpp>
 #include <Gamemodes/LapKO/LapKOMgr.hpp>
@@ -444,6 +445,7 @@ static void AddStartingBalloons(RaceBalloonManager *mgr, int playerId, u32 teamI
         return;
     }
 
+    if (ScoreBased::IsBossBattle()) count = ScoreBased::GetBossStartingBalloons(static_cast<u8>(playerId));
     mgr->Add(playerId, teamId, isInitial, delay, count, interval);
 }
 kmCall(0x80869ba8, AddStartingBalloons);

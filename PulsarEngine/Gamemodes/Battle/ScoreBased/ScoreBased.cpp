@@ -96,10 +96,18 @@ static void Reset() {
     memset(&state, 0, sizeof(state));
     appliedEliminations = 0;
     finishApplied = false;
+    ResetBossItems();
     if (!IsActive()) return;
     const u8 count = Racedata::sInstance->racesScenario.playerCount;
     state.playerCount = count <= 12 ? count : 12;
     state.singleCoin = IsSingleCoinBattle();
+    state.bossMode = IsBossBattle();
+    state.bossId = GetBossPlayerId();
+    state.winnerTeam = 2;
+    state.bossItem = ITEM_NONE;
+    state.nextBossItemMs = BossItemDelay(Racedata::sInstance->racesScenario.settings.selectId, 0);
+    if (state.bossMode)
+        for (u8 id = 0; id < state.playerCount; ++id) state.balloons[id] = GetBossStartingBalloons(id);
     state.coinOwner = 0xff;
     state.unownedRemainingMs = 180000;
     for (u8 id = 0; id < 12; ++id) state.ownedRemainingMs[id] = 20000;
@@ -107,6 +115,9 @@ static void Reset() {
 static RaceLoadHook resetHook(Reset);
 
 bool IsEliminated(u8 playerId) { return playerId < 12 && (state.eliminated & (1 << playerId)); }
+u8 GetBossBalloons(u8 playerId) { return playerId < state.playerCount ? state.balloons[playerId] : 0; }
+u8 GetBossWinnerTeam() { return state.winnerTeam; }
+u32 GetBossElapsedMilliseconds() { return state.elapsedMs; }
 bool HasFinished() { return state.finished != 0; }
 u16 GetScoreLimit() { return ScoreLimitForPlayers(state.playerCount); }
 u16 GetCutoff() { return state.round; }
@@ -136,7 +147,17 @@ static void ReadHostState() {
         received.finished > 1 || received.elapsedMs < state.elapsedMs || received.round < state.round ||
         (received.eliminated & state.eliminated) != state.eliminated ||
         (received.eliminated >> state.playerCount) != 0) return;
-    if (received.singleCoin != state.singleCoin) return;
+    if (received.singleCoin != state.singleCoin || received.bossMode != state.bossMode || received.bossId != state.bossId) return;
+    if (state.bossMode) {
+        if (received.winnerTeam > 2 || received.round != 0 || received.bossItemSequence < state.bossItemSequence ||
+            received.nextBossItemMs < state.nextBossItemMs) return;
+        if (received.bossItemSequence && received.bossItem != STAR && received.bossItem != MEGA_MUSHROOM &&
+            received.bossItem != LIGHTNING && received.bossItem != BULLET_BILL) return;
+        for (u8 id = 0; id < state.playerCount; ++id)
+            if (received.balloons[id] > 5 || ((received.eliminated & (1 << id)) && received.balloons[id] != 0)) return;
+        if (received.finished != BossRoundFinished(received.eliminated, state.bossId, state.playerCount) ||
+            received.winnerTeam != BossWinner(received.eliminated, state.bossId, state.playerCount)) return;
+    }
     if (state.singleCoin) {
         if ((received.coinOwner != 0xff && received.coinOwner >= state.playerCount) ||
             received.unownedRemainingMs > state.unownedRemainingMs || received.round != 0) return;
@@ -167,6 +188,23 @@ static void UpdateAuthority(Raceinfo &race) {
     state.elapsedMs = static_cast<u32>(elapsed.minutes) * 60000 + elapsed.seconds * 1000 + elapsed.milliseconds;
     for (u8 id = 0; id < state.playerCount; ++id) {
         if (!IsEliminated(id)) state.scores[id] = race.players[id]->battleScore;
+    }
+    if (state.bossMode) {
+        for (u8 id = 0; id < state.playerCount; ++id) {
+            const u8 balloons = ReadBossBalloonCount(id);
+            if (!IsEliminated(id) && (balloons == 0 || (race.players[id]->stateFlags & 0x10))) Eliminate(id, 1);
+            state.balloons[id] = IsEliminated(id) ? 0 : balloons;
+        }
+        state.finished = BossRoundFinished(state.eliminated, state.bossId, state.playerCount);
+        state.winnerTeam = BossWinner(state.eliminated, state.bossId, state.playerCount);
+        if (!state.finished && state.elapsedMs >= state.nextBossItemMs) {
+            static const u8 items[4] = {STAR, MEGA_MUSHROOM, LIGHTNING, BULLET_BILL};
+            ++state.bossItemSequence;
+            const u32 seed = Racedata::sInstance->racesScenario.settings.selectId;
+            state.bossItem = items[BossItemIndex(seed, state.bossItemSequence)];
+            state.nextBossItemMs = state.elapsedMs + BossItemDelay(seed, state.bossItemSequence);
+        }
+        return;
     }
     if (!IsCoinBattle()) {
         u32 teamScores[2] = {0, 0};
@@ -211,6 +249,11 @@ static void UpdateAuthority(Raceinfo &race) {
 }
 
 static bool RanksAhead(u8 a, u8 b, const Raceinfo &race) {
+    if (state.bossMode && state.finished && state.winnerTeam < 2) {
+        const bool aWins = (a == state.bossId ? 0 : 1) == state.winnerTeam;
+        const bool bWins = (b == state.bossId ? 0 : 1) == state.winnerTeam;
+        if (aWins != bWins) return aWins;
+    }
     const bool aOut = IsEliminated(a), bOut = IsEliminated(b);
     if (aOut != bOut) return !aOut;
     if (state.singleCoin && state.ownedRemainingMs[a] != state.ownedRemainingMs[b])
@@ -224,7 +267,7 @@ static bool RanksAhead(u8 a, u8 b, const Raceinfo &race) {
 }
 
 static void ApplyState(Raceinfo &race) {
-    if (IsCoinBattle()) {
+    if (IsCoinBattle() || state.bossMode) {
         for (u8 id = 0; id < state.playerCount; ++id) {
             if (IsEliminated(id)) {
                 RaceinfoPlayer &player = *race.players[id];
@@ -256,7 +299,9 @@ static void ApplyState(Raceinfo &race) {
     for (u8 id = 0; id < state.playerCount; ++id) {
         // Results show seconds of cumulative ownership; placements above use
         // full millisecond precision, even after the coin has been dropped.
-        race.players[id]->battleScore = state.singleCoin ? (20000 - state.ownedRemainingMs[id]) / 1000 : state.scores[id];
+        race.players[id]->battleScore = state.bossMode
+            ? (state.winnerTeam < 2 && (id == state.bossId ? 0 : 1) == state.winnerTeam ? 1 : 0)
+            : state.singleCoin ? (20000 - state.ownedRemainingMs[id]) / 1000 : state.scores[id];
     }
     for (u8 pos = 0; pos < state.playerCount; ++pos) {
         const u8 id = race.playerIdInEachPosition[pos];
@@ -275,6 +320,7 @@ static void Update() {
         else ReadHostState();
     }
     ApplyState(*race);
+    if (state.bossMode && !state.finished) ApplyBossItem(state.bossItemSequence, state.bossItem);
     UpdateSpectatorCameras();
 }
 static RaceFrameHook updateHook(Update);
@@ -292,7 +338,11 @@ static void SetCountdownTarget(Timer &target, u32 milliseconds) {
 }
 
 static void UpdateTimer(RaceTimerMgr *timer) {
-    if (IsActive()) {
+    if (IsBossBattle()) {
+        timer->raceDurationMs = 0xffffffff;
+        timer->hasRaceTimeRanOut = false;
+        timer->isTimerReversed = false;
+    } else if (IsActive()) {
         const u32 countdownTarget = IsSingleCoinBattle()
                                         ? state.elapsedMs + GetCoinTimerMilliseconds()
                                         : IsCoinBattle() ? CoinCutoffMilliseconds(state.round)
@@ -319,7 +369,12 @@ static void UpdateBattle(GMData *mode, u32 original, bool onlineBalloon) {
         if (finishApplied) return; // native updates must not re-sort or overwrite the final snapshot
         if (onlineBalloon) static_cast<GMDataOnlineBalloonBattle *>(mode)->timer.isActive = false;
     }
+    const bool bossOnline = onlineBalloon && IsBossBattle();
+    // Native online end-condition checks latch +0x106 and stop accepting hits.
+    // Only the cumulative Boss state may finish this round.
+    if (bossOnline) reinterpret_cast<u8 *>(mode)[0x106] = 0;
     reinterpret_cast<BattleUpdate>(original)(mode);
+    if (bossOnline) reinterpret_cast<u8 *>(mode)[0x106] = 0;
     RestoreBalloonScoreLosses(scores, scoreCount);
 }
 static void UpdateBalloon(GMData *mode) { UpdateBattle(mode, kmRuntimeAddr(0x80539574), false); }
@@ -418,7 +473,7 @@ const wchar_t *GetSettingText(s32 id) {
         case 0x68030: return L"Time Based";
         case 0x68031: return L"Score Based";
         case 0x68300: return L"Use the normal battle timer and existing battle settings.";
-        case 0x68301: return L"Balloon: team score target (75 at 12 players).\nCoins: 50% cutoff, 50% single coin (hold for 20 seconds).";
+        case 0x68301: return L"Balloon: 50% team score, 50% Boss Mode.\nCoins: 50% cutoff, 50% single coin (hold for 20 seconds).";
         default: return nullptr;
     }
 }

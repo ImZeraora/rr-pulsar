@@ -29,6 +29,35 @@ inline bool SingleCoinFromSeed(unsigned seed) {
     return (seed & 1) != 0;
 }
 
+inline unsigned BossRandom(unsigned seed) {
+    seed ^= seed >> 16;
+    seed *= 0x7feb352dU;
+    seed ^= seed >> 15;
+    seed *= 0x846ca68bU;
+    return seed ^ (seed >> 16);
+}
+inline unsigned BossPlayerFromSeed(unsigned seed, unsigned players) {
+    if (players == 0 || players > 12) return 0xff;
+    return BossRandom(seed ^ 0xb055b055U) % players;
+}
+inline unsigned BossItemDelay(unsigned seed, unsigned sequence) {
+    return 10000 + BossRandom(seed ^ (sequence * 0x9e3779b9U)) % 5001;
+}
+inline unsigned BossItemIndex(unsigned seed, unsigned sequence) {
+    return BossRandom(seed ^ (sequence * 0x85ebca6bU) ^ 0x17eaf00dU) % 4;
+}
+inline bool BossRoundFinished(unsigned eliminated, unsigned boss, unsigned players) {
+    if (players < 2 || players > 12 || boss >= players) return false;
+    const unsigned bossBit = 1u << boss;
+    const unsigned fighters = ((1u << players) - 1) & ~bossBit;
+    return (eliminated & bossBit) || (eliminated & fighters) == fighters;
+}
+inline unsigned BossWinner(unsigned eliminated, unsigned boss, unsigned players) {
+    if (!BossRoundFinished(eliminated, boss, players)) return 2;
+    if (eliminated == (1u << players) - 1) return 2;
+    return (eliminated & (1u << boss)) ? 1 : 0;
+}
+
 inline unsigned CountdownAfter(unsigned remaining, unsigned elapsed) {
     return elapsed >= remaining ? 0 : remaining - elapsed;
 }

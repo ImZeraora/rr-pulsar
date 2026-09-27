@@ -23,7 +23,16 @@ public:
 
     void OnUpdate() override {
         if (!IsActive()) return;
-        if (IsSingleCoinBattle()) {
+        if (IsBossBattle()) {
+            if (HasFinished()) {
+                const u8 winner = GetBossWinnerTeam();
+                swprintf(text, 160, winner == 0 ? L"Boss wins!" : winner == 1 ? L"Survivors win!" : L"Draw!");
+            } else {
+                const u8 boss = GetBossPlayerId();
+                const u8 survivors = GetSurvivorCount() - (IsEliminated(boss) ? 0 : 1);
+                swprintf(text, 160, L"Boss Mode | Boss: %u balloons | %u survivors", GetBossBalloons(boss), survivors);
+            }
+        } else if (IsSingleCoinBattle()) {
             swprintf(text, 160, HasFinished() ? L"Round over!" : L"Single coin | Hold the coin for 20 seconds");
         } else if (IsCoinBattle()) {
             if (HasFinished()) {

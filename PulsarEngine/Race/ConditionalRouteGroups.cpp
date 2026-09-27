@@ -1,3 +1,4 @@
+#include <Gamemodes/Battle/ScoreBased/ScoreBased.hpp>
 #include <kamek.hpp>
 #include <MarioKartWii/AI/CPUDriving.hpp>
 #include <MarioKartWii/Archive/ArchiveMgr.hpp>
@@ -394,6 +395,7 @@ kmCall(0x807b4dc4, ConditionalCalcNextItemPoint);  // Item route point advance
 kmCall(0x807b514c, ConditionalCalcNextItemPoint);  // Item route initialization
 
 static void ConditionalKillerUpdate(Kart::Killer *killer) {
+    if (ScoreBased::UpdateBossBullet(*killer)) return;
     const u8 previousPlayerId = SetRoutePlayerId(killer->GetPlayerIdx());
     killer->Update();
     sRoutePlayerId = previousPlayerId;
